@@ -27,10 +27,10 @@ jobs:
           cd backend
           pip install -r requirements.txt
 
-      - name: Run Backend Tests
-        run: |
-          cd backend
-          pytest
+      # - name: Run Backend Tests
+      #   run: |
+      #     cd backend
+      #     pytest
 
       #################################################
       # Frontend

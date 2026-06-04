@@ -130,6 +130,105 @@ class AgentCommand(models.Model):
         ordering = ['created_at']
 
 
+class RegistryRepository(models.Model):
+    """Docker registry repository known to the controller."""
+    owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='registry_repositories')
+    name = models.CharField(max_length=255, unique=True)
+    registry_url = models.CharField(max_length=255, default='http://registry:5000')
+    pull_host = models.CharField(max_length=255, default='localhost:5000')
+    username = models.CharField(max_length=150, blank=True)
+    password_secret = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        ordering = ['name']
+
+
+class RegistryImage(models.Model):
+    """Image tag stored in the self-hosted registry."""
+    repository = models.ForeignKey(RegistryRepository, on_delete=models.CASCADE, related_name='images')
+    name = models.CharField(max_length=255)
+    tag = models.CharField(max_length=128)
+    digest = models.CharField(max_length=255, blank=True)
+    size_bytes = models.BigIntegerField(default=0)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def reference(self):
+        return f'{self.repository.pull_host}/{self.name}:{self.tag}'
+
+    def __str__(self):
+        return f'{self.name}:{self.tag}'
+
+    class Meta:
+        unique_together = ('repository', 'tag')
+        ordering = ['name', 'tag']
+
+
+class DeploymentJob(models.Model):
+    """Registry image deployment queued for an agent to pull and run."""
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_SUCCEEDED = 'succeeded'
+    STATUS_FAILED = 'failed'
+    STATUS_CANCELED = 'canceled'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_RUNNING, 'Running'),
+        (STATUS_SUCCEEDED, 'Succeeded'),
+        (STATUS_FAILED, 'Failed'),
+        (STATUS_CANCELED, 'Canceled'),
+    ]
+
+    owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='deployment_jobs')
+    agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name='deployment_jobs')
+    repository = models.ForeignKey(RegistryRepository, null=True, blank=True, on_delete=models.SET_NULL, related_name='deployment_jobs')
+    image = models.ForeignKey(RegistryImage, null=True, blank=True, on_delete=models.SET_NULL, related_name='deployment_jobs')
+    image_name = models.CharField(max_length=255)
+    tag = models.CharField(max_length=128)
+    image_reference = models.CharField(max_length=512)
+    container_name = models.CharField(max_length=255)
+    run_args = models.JSONField(default=list, blank=True)
+    registry_username = models.CharField(max_length=150, blank=True)
+    registry_password_secret = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    output = models.TextField(blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.agent.name} deploy {self.image_reference} ({self.status})'
+
+    class Meta:
+        ordering = ['-created_at']
+
+
+class DeploymentHistory(models.Model):
+    """Audit log for registry image deployment jobs."""
+    job = models.ForeignKey(DeploymentJob, on_delete=models.CASCADE, related_name='history')
+    agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.SET_NULL, related_name='deployment_history')
+    status = models.CharField(max_length=20)
+    message = models.TextField(blank=True)
+    output = models.TextField(blank=True)
+    actor = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='deployment_history')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'{self.job_id} {self.status} at {self.created_at}'
+
+    class Meta:
+        ordering = ['-created_at']
+
+
 class Deployment(models.Model):
     """Docker Compose deployment tracked by this controller."""
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='deployments')

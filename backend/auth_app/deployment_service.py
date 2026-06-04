@@ -14,6 +14,24 @@ def record_deployment_history(job, status_value, message='', output='', actor=No
     )
 
 
+def create_deployment_job(*, owner, agent, image, image_reference, container_name, run_args=None, registry_username='', registry_password_secret=''):
+    job = DeploymentJob.objects.create(
+        owner=owner,
+        agent=agent,
+        repository=image.repository if image else None,
+        image=image,
+        image_name=image.name if image else image_reference.rsplit(':', 1)[0],
+        tag=image.tag if image else image_reference.rsplit(':', 1)[-1],
+        image_reference=image_reference,
+        container_name=container_name,
+        run_args=run_args or [],
+        registry_username=registry_username or '',
+        registry_password_secret=registry_password_secret or '',
+    )
+    record_deployment_history(job, DeploymentJob.STATUS_PENDING, 'Deployment job created.', actor=owner)
+    return job
+
+
 def mark_deployment_job_running(job):
     job.status = DeploymentJob.STATUS_RUNNING
     job.started_at = job.started_at or timezone.now()

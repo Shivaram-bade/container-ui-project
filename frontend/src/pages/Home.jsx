@@ -34,6 +34,14 @@ const manualActions = [
   },
 ];
 
+const registryAction = {
+  id: 'registry',
+  icon: 'RG',
+  path: '/registry',
+  title: 'Registry Deploy',
+  description: 'Deploy tagged images from the self-hosted registry to connected agents.',
+};
+
 const deploymentAction = {
   id: 'deployment',
   icon: 'DP',
@@ -97,7 +105,7 @@ const BUILD_JOB_STORAGE_KEY = 'vitel-active-build-job-id';
 const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
 const LOCAL_SERVER_ID = 'local';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
-const routedActions = [dashboardAction, ...homeActions, serverInfoAction, rbacAction, userProfileAction, ...agentActions];
+const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, rbacAction, userProfileAction, ...agentActions];
 
 const getStoredUser = () => {
   try {
@@ -376,6 +384,18 @@ export default function Home() {
   const [deploymentDetailLoading, setDeploymentDetailLoading] = useState(false);
   const [deploymentActionMessage, setDeploymentActionMessage] = useState('');
   const [deploymentActionLoading, setDeploymentActionLoading] = useState(false);
+  const [registryImages, setRegistryImages] = useState([]);
+  const [registryImagesLoading, setRegistryImagesLoading] = useState(false);
+  const [registryImagesError, setRegistryImagesError] = useState('');
+  const [registryAgentId, setRegistryAgentId] = useState('');
+  const [registryImageId, setRegistryImageId] = useState('');
+  const [registryContainerName, setRegistryContainerName] = useState('');
+  const [registryRunArgs, setRegistryRunArgs] = useState('');
+  const [registryUsername, setRegistryUsername] = useState('');
+  const [registryPassword, setRegistryPassword] = useState('');
+  const [registryDeployLoading, setRegistryDeployLoading] = useState(false);
+  const [registryDeployMessage, setRegistryDeployMessage] = useState('');
+  const [registryDeployOutput, setRegistryDeployOutput] = useState('');
   const [selectedDeploymentNetwork, setSelectedDeploymentNetwork] = useState('');
   const [selectedDeploymentVolume, setSelectedDeploymentVolume] = useState('');
   const [containerLogOutput, setContainerLogOutput] = useState('');
@@ -459,6 +479,7 @@ export default function Home() {
       network: ['create_network', 'delete_network'],
       volume: ['create_volume', 'delete_volume'],
       deployment: ['create_deployment', 'delete_deployment'],
+      registry: ['create_deployment'],
       'server-info': ['view_server_info'],
       rbac: ['create_rbac_user', 'create_rbac_group'],
       'agent-create': ['create_agent'],
@@ -479,6 +500,7 @@ export default function Home() {
   const isContainerActive = activeAction.id === 'container';
   const isBuildImageActive = activeAction.id === 'image';
   const isDeploymentActive = activeAction.id === 'deployment';
+  const isRegistryActive = activeAction.id === 'registry';
   const redirectedDeploymentId = getDeploymentIdFromApiPath(location);
   const isNetworkActive = activeAction.id === 'network';
   const isVolumeActive = activeAction.id === 'volume';
@@ -2574,6 +2596,58 @@ export default function Home() {
     }
   }, [isDeploymentActive]);
 
+  const loadRegistryImages = async () => {
+    setRegistryImagesLoading(true);
+    setRegistryImagesError('');
+    try {
+      const response = await authService.listRegistryImages();
+      setRegistryImages(response.data.images || []);
+    } catch (error) {
+      const data = error.response?.data;
+      setRegistryImages([]);
+      setRegistryImagesError(data?.error || 'Unable to load registry images.');
+    } finally {
+      setRegistryImagesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isRegistryActive) return;
+    loadAgents();
+    loadRegistryImages();
+  }, [isRegistryActive]);
+
+  const handleDeployRegistryImage = async (event) => {
+    event.preventDefault();
+    setRegistryDeployLoading(true);
+    setRegistryDeployMessage('');
+    setRegistryDeployOutput('Creating registry deployment job...');
+
+    try {
+      const response = await authService.deployRegistryImage({
+        agent_id: registryAgentId,
+        image_id: registryImageId,
+        container_name: registryContainerName,
+        run_args: registryRunArgs,
+        registry_username: registryUsername,
+        registry_password: registryPassword,
+      });
+      const job = response.data.job;
+      setRegistryDeployOutput(job ? `Job ${job.id} queued for ${job.agent?.name || 'agent'}\nImage: ${job.image_reference}\nContainer: ${job.container_name}\nStatus: ${job.status}` : 'Deployment job queued.');
+      setRegistryDeployMessage('Deployment job queued. The agent polls every 30 seconds.');
+      setRegistryContainerName('');
+      setRegistryRunArgs('');
+      setRegistryUsername('');
+      setRegistryPassword('');
+    } catch (error) {
+      const data = error.response?.data;
+      setRegistryDeployOutput(data?.output || data?.error || error.message || 'Unable to queue deployment job.');
+      setRegistryDeployMessage(data?.error || 'Unable to queue deployment job.');
+    } finally {
+      setRegistryDeployLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!deploymentJobId || !deploymentLoading) {
       return undefined;
@@ -2649,6 +2723,12 @@ export default function Home() {
             deploymentAction,
             isDeploymentActive,
             () => handleActionSelect(deploymentAction)
+          )}
+
+          {canSeeAction(registryAction) && renderNavItem(
+            registryAction,
+            isRegistryActive,
+            () => handleActionSelect(registryAction)
           )}
 
           {canSeeAction(serverInfoAction) && renderNavItem(
@@ -3085,6 +3165,33 @@ export default function Home() {
             onSendShellCommand={handleSendShellCommand}
             onCloseConnectModal={handleCloseShell}
             onConnectModalDragStart={handleConnectModalDragStart}
+            canOperate={canOperate}
+          />
+        ) : isRegistryActive ? (
+          <RegistryPanel
+            agents={agents}
+            agentsLoading={agentsLoading}
+            images={registryImages}
+            imagesLoading={registryImagesLoading}
+            imagesError={registryImagesError}
+            selectedAgentId={registryAgentId}
+            selectedImageId={registryImageId}
+            containerName={registryContainerName}
+            runArgs={registryRunArgs}
+            registryUsername={registryUsername}
+            registryPassword={registryPassword}
+            deployLoading={registryDeployLoading}
+            deployMessage={registryDeployMessage}
+            deployOutput={registryDeployOutput}
+            onSelectedAgentChange={setRegistryAgentId}
+            onSelectedImageChange={setRegistryImageId}
+            onContainerNameChange={setRegistryContainerName}
+            onRunArgsChange={setRegistryRunArgs}
+            onRegistryUsernameChange={setRegistryUsername}
+            onRegistryPasswordChange={setRegistryPassword}
+            onDeploy={handleDeployRegistryImage}
+            onRefreshImages={loadRegistryImages}
+            onRefreshAgents={loadAgents}
             canOperate={canOperate}
           />
         ) : isBuildImageActive ? (
@@ -5775,6 +5882,151 @@ function ComposeFileBrowserModal({
   );
 }
 
+
+function RegistryPanel({
+  agents,
+  agentsLoading,
+  images,
+  imagesLoading,
+  imagesError,
+  selectedAgentId,
+  selectedImageId,
+  containerName,
+  runArgs,
+  registryUsername,
+  registryPassword,
+  deployLoading,
+  deployMessage,
+  deployOutput,
+  onSelectedAgentChange,
+  onSelectedImageChange,
+  onContainerNameChange,
+  onRunArgsChange,
+  onRegistryUsernameChange,
+  onRegistryPasswordChange,
+  onDeploy,
+  onRefreshImages,
+  onRefreshAgents,
+  canOperate = () => true,
+}) {
+  const connectedAgents = agents.filter((agent) => agent.id !== LOCAL_SERVER_ID && agent.connected);
+  const selectedImage = images.find((image) => String(image.id) === String(selectedImageId));
+  const canDeploy = canOperate('create_deployment');
+
+  return (
+    <section className="home-panel deployment-panel">
+      <PanelIntro
+        title="Registry Deploy"
+        description="Queue a connected agent to pull a tagged image from the self-hosted registry and run it."
+      />
+
+      <form className="build-image-form" onSubmit={onDeploy}>
+        <label className="agent-select-field">
+          <span>Select Agent</span>
+          <select
+            value={selectedAgentId}
+            onChange={(event) => onSelectedAgentChange(event.target.value)}
+            disabled={deployLoading || agentsLoading}
+          >
+            <option value="">Select connected agent</option>
+            {connectedAgents.map((agent) => (
+              <option value={agent.id} key={agent.id}>
+                {agent.name} ({agent.server_ip}:{agent.port || 19541})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          <span>Registry image</span>
+          <select
+            value={selectedImageId}
+            onChange={(event) => onSelectedImageChange(event.target.value)}
+            disabled={deployLoading || imagesLoading}
+          >
+            <option value="">Select image tag</option>
+            {images.map((image) => (
+              <option value={image.id} key={image.id}>
+                {image.reference || `${image.name}:${image.tag}`}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          <span>Container name</span>
+          <input
+            type="text"
+            value={containerName}
+            onChange={(event) => onContainerNameChange(event.target.value)}
+            placeholder={selectedImage ? selectedImage.name.split('/').pop() : 'example: web-app'}
+            disabled={deployLoading}
+          />
+        </label>
+
+        <label>
+          <span>Run arguments</span>
+          <input
+            type="text"
+            value={runArgs}
+            onChange={(event) => onRunArgsChange(event.target.value)}
+            placeholder="example: -p 8080:80 --env NODE_ENV=production"
+            disabled={deployLoading}
+          />
+        </label>
+
+        <label>
+          <span>Registry username</span>
+          <input
+            type="text"
+            value={registryUsername}
+            onChange={(event) => onRegistryUsernameChange(event.target.value)}
+            placeholder="optional"
+            disabled={deployLoading}
+            autoComplete="off"
+          />
+        </label>
+
+        <label>
+          <span>Registry password</span>
+          <input
+            type="password"
+            value={registryPassword}
+            onChange={(event) => onRegistryPasswordChange(event.target.value)}
+            placeholder="optional"
+            disabled={deployLoading}
+            autoComplete="new-password"
+          />
+        </label>
+
+        {deployMessage && <p className="build-message">{deployMessage}</p>}
+        {imagesError && <p className="build-message error">{imagesError}</p>}
+
+        <div className="build-actions">
+          <button
+            type="submit"
+            className="home-primary-button"
+            disabled={!canDeploy || deployLoading || !selectedAgentId || !selectedImageId}
+          >
+            {deployLoading ? 'Queueing deployment...' : 'Deploy image'}
+          </button>
+          <button type="button" className="home-secondary-button" onClick={onRefreshImages} disabled={imagesLoading || deployLoading}>
+            Refresh images
+          </button>
+          <button type="button" className="home-secondary-button" onClick={onRefreshAgents} disabled={agentsLoading || deployLoading}>
+            Refresh agents
+          </button>
+        </div>
+      </form>
+
+      <div className="agent-command-panel">
+        <h3>Deployment job</h3>
+        <pre>{deployOutput || (imagesLoading ? 'Loading registry images...' : 'No deployment queued yet.')}</pre>
+      </div>
+    </section>
+  );
+}
+
 function BuildImagePanel({
   imageName,
   dockerfilePath,
@@ -6415,9 +6667,9 @@ function AgentPanel({
                     disabled={agentLoading}
                   >
                     <option value="manual">Manual Docker install</option>
-                  {/*  <option value="ssh">Automatic SSH install</option> */}
+                    <option value="ssh">Automatic SSH install</option>
                   </select>
-                  <small className="field-help">Manual install gives copyable commands that download the agent image from this application.</small>
+                  <small className="field-help">Manual install gives copyable commands that pull the agent image from this application's registry.</small>
                 </label>
                 <label>
                   <span>Agent service port</span>

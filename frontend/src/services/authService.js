@@ -332,6 +332,21 @@ export const authService = {
     return api.post(`/api/auth/build-image-stop/${jobId}/`);
   },
 
+
+  listRegistryImages: () => {
+    return api.get('/api/registry/images/');
+  },
+
+  listRegistryTags: (repository) => {
+    return api.get('/api/registry/tags/', {
+      params: { image: repository },
+    });
+  },
+
+  deployRegistryImage: (deploymentData) => {
+    return api.post('/api/registry/deploy/', deploymentData);
+  },
+
   listNetworks: (serverId) => {
     return api.get('/api/auth/network/', {
       params: serverId ? { server_id: serverId } : {},

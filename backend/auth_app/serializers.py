@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Agent, RBACGroup, UserProfile, LoginHistory
+from .models import (
+    Agent, DeploymentHistory, DeploymentJob, RBACGroup, RegistryImage,
+    RegistryRepository, UserProfile, LoginHistory
+)
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -96,6 +99,46 @@ class AgentSerializer(serializers.ModelSerializer):
             'id', 'name', 'server_ip', 'ssh_username', 'ssh_port', 'ssh_auth_type', 'port',
             'connected', 'last_seen', 'hostname', 'containers_count', 'images_count',
             'networks_count', 'volumes_count', 'created_at', 'updated_at',
+        ]
+
+
+class RegistryRepositorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RegistryRepository
+        fields = ['id', 'name', 'registry_url', 'pull_host', 'username', 'created_at', 'updated_at']
+
+
+class RegistryImageSerializer(serializers.ModelSerializer):
+    repository_name = serializers.CharField(source='repository.name', read_only=True)
+    pull_host = serializers.CharField(source='repository.pull_host', read_only=True)
+    reference = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = RegistryImage
+        fields = [
+            'id', 'repository', 'repository_name', 'pull_host', 'name', 'tag',
+            'digest', 'size_bytes', 'reference', 'last_synced_at', 'created_at', 'updated_at',
+        ]
+
+
+class DeploymentHistorySerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source='actor.username', read_only=True)
+
+    class Meta:
+        model = DeploymentHistory
+        fields = ['id', 'job', 'agent', 'status', 'message', 'output', 'actor', 'actor_name', 'created_at']
+
+
+class DeploymentJobSerializer(serializers.ModelSerializer):
+    agent = AgentSerializer(read_only=True)
+    history = DeploymentHistorySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = DeploymentJob
+        fields = [
+            'id', 'agent', 'repository', 'image', 'image_name', 'tag', 'image_reference',
+            'container_name', 'run_args', 'status', 'output', 'error', 'history',
+            'created_at', 'started_at', 'completed_at', 'updated_at',
         ]
 
 

@@ -14,7 +14,6 @@ import binascii
 from datetime import datetime, timedelta
 from django.conf import settings
 from django.core import signing
-from django.http import FileResponse
 import os
 import posixpath
 import platform
@@ -35,10 +34,18 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import urlparse
 
-from .models import Agent, AgentCommand, Deployment, RBACGroup, UserProfile, LoginHistory
+from .models import (
+    Agent, AgentCommand, Deployment, DeploymentJob, RBACGroup, RegistryImage,
+    UserProfile, LoginHistory
+)
 from .serializers import (
     RegisterSerializer, LoginSerializer, UserSerializer,
-    LoginHistorySerializer, AgentSerializer
+    LoginHistorySerializer, AgentSerializer, DeploymentJobSerializer, RegistryImageSerializer
+)
+from .deployment_service import create_deployment_job, mark_deployment_job_complete, mark_deployment_job_running
+from .registry_service import (
+    RegistryClientError, build_registry_reference, get_default_registry_push_host,
+    sync_registry_images, list_registry_tags,
 )
 import pty
 import fcntl
@@ -168,7 +175,16 @@ AGENT_DOCKER_VOLUME = 'agent_vol'
 LOCAL_AGENT_IMAGE = 'agent:latest'
 REMOTE_AGENT_CONTAINER_NAME = 'vitel-agent'
 REMOTE_AGENT_IMAGE = os.getenv('VITEL_AGENT_IMAGE', 'yourrepo/vitel-agent:latest')
-AGENT_IMAGE_SOURCE = os.getenv('VITEL_AGENT_SOURCE_IMAGE', 'vitel-container-backend:latest')
+AGENT_IMAGE_SOURCE = os.getenv('VITEL_AGENT_SOURCE_IMAGE', 'container-ui-project-backend:latest')
+AGENT_IMAGE_SOURCE_CANDIDATES = tuple(dict.fromkeys(filter(None, [
+    AGENT_IMAGE_SOURCE,
+    'container-ui-project-backend:latest',
+    'container-ui-project-backend',
+    'vitel-container-backend:latest',
+    'vitel-container-backend',
+    'vitel-backend:latest',
+    'vitel-backend',
+])))
 AGENT_IMAGE_TOKEN_SALT = 'vitel-agent-image-download'
 AGENT_IMAGE_TOKEN_MAX_AGE = 24 * 60 * 60
 CONTROLLER_CONTAINER_NAME = 'vitel-backend'
@@ -427,8 +443,274 @@ def build_agent_commands(agent, password, request):
 
 
 def build_pull_agent_client_source():
-    return "#!/usr/bin/env python3\nimport json\nimport os\nimport subprocess\nimport sys\nimport time\nfrom urllib import request as urllib_request\nfrom urllib import error as urllib_error\n\n\nAGENT_ID = os.environ.get('VITEL_AGENT_ID', '')\nAGENT_NAME = os.environ.get('VITEL_AGENT_NAME', 'vitel-agent')\nAGENT_PASSWORD = os.environ.get('VITEL_AGENT_PASSWORD', '')\nREPORTED_IP = os.environ.get('VITEL_AGENT_REPORTED_IP', '')\nHEARTBEAT_URL = os.environ.get('VITEL_AGENT_URL', '')\nCOMMAND_URL = os.environ.get('VITEL_AGENT_COMMAND_URL', '')\nCOMMAND_RESULT_URL = os.environ.get('VITEL_AGENT_COMMAND_RESULT_URL', '')\n\n\ndef log(message):\n    print(message, flush=True)\n\n\ndef post_json(url, payload, timeout=30):\n    body = json.dumps(payload).encode('utf-8')\n    req = urllib_request.Request(url, data=body, headers={'Content-Type': 'application/json'}, method='POST')\n    try:\n        with urllib_request.urlopen(req, timeout=timeout) as response:\n            text = response.read().decode('utf-8')\n            return response.status, json.loads(text) if text else {}\n    except urllib_error.HTTPError as exc:\n        text = exc.read().decode('utf-8', errors='replace')\n        try:\n            data = json.loads(text) if text else {}\n        except json.JSONDecodeError:\n            data = {'error': text or str(exc)}\n        return exc.code, data\n    except (urllib_error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:\n        return 0, {'error': str(exc)}\n\n\ndef count_lines(command):\n    try:\n        result = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)\n    except (OSError, subprocess.TimeoutExpired):\n        return 0\n    if result.returncode != 0:\n        return 0\n    return len([line for line in result.stdout.splitlines() if line.strip()])\n\n\ndef get_server_ip():\n    if REPORTED_IP:\n        return REPORTED_IP\n    try:\n        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5, check=False)\n        if result.returncode == 0 and result.stdout.strip():\n            return result.stdout.split()[0]\n    except (OSError, subprocess.TimeoutExpired):\n        pass\n    return ''\n\n\ndef heartbeat():\n    if not HEARTBEAT_URL:\n        return False\n    payload = {\n        'agent_id': AGENT_ID,\n        'name': AGENT_NAME,\n        'password': AGENT_PASSWORD,\n        'server_ip': get_server_ip(),\n        'hostname': os.uname().nodename if hasattr(os, 'uname') else '',\n        'containers_count': count_lines(['docker', 'ps', '-aq']),\n        'images_count': count_lines(['docker', 'image', 'ls', '-q']),\n        'networks_count': count_lines(['docker', 'network', 'ls', '-q']),\n        'volumes_count': count_lines(['docker', 'volume', 'ls', '-q']),\n    }\n    status, data = post_json(HEARTBEAT_URL, payload, timeout=30)\n    if 200 <= status < 300:\n        log('Heartbeat accepted at %s' % time.strftime('%Y-%m-%d %H:%M:%S'))\n        return True\n    log('Heartbeat failed status=%s %s' % (status, data.get('error') or data))\n    return False\n\n\ndef command_to_process(command):\n    if isinstance(command, list):\n        command = [str(part) for part in command if str(part)]\n        return command, ' '.join(command)\n    command = str(command or '').strip()\n    return ['sh', '-lc', command], command\n\n\ndef post_command_result(command_id, success, return_code, command, output):\n    payload = {\n        'agent_id': AGENT_ID,\n        'name': AGENT_NAME,\n        'password': AGENT_PASSWORD,\n        'command_id': command_id,\n        'success': bool(success),\n        'return_code': return_code,\n        'command': command,\n        'output': output or '',\n    }\n    status, data = post_json(COMMAND_RESULT_URL, payload, timeout=30)\n    if 200 <= status < 300:\n        log('Command %s result posted.' % command_id)\n        return True\n    log('Command %s result post failed status=%s %s' % (command_id, status, data.get('error') or data))\n    return False\n\n\ndef poll_command():\n    if not COMMAND_URL or not COMMAND_RESULT_URL:\n        return False\n    payload = {'agent_id': AGENT_ID, 'name': AGENT_NAME, 'password': AGENT_PASSWORD}\n    status, data = post_json(COMMAND_URL, payload, timeout=30)\n    if status == 204:\n        return False\n    if not (200 <= status < 300):\n        log('Command poll failed status=%s %s' % (status, data.get('error') or data))\n        return False\n    command_payload = data.get('command')\n    if not command_payload:\n        return False\n    command_id = command_payload.get('id')\n    command = command_payload.get('command')\n    try:\n        timeout = max(1, min(int(command_payload.get('timeout') or 120), 1800))\n    except (TypeError, ValueError):\n        timeout = 120\n    popen_command, display_command = command_to_process(command)\n    if not command_id or not popen_command:\n        return False\n    log('Running pulled command %s: %s' % (command_id, display_command))\n    try:\n        result = subprocess.run(popen_command, capture_output=True, text=True, timeout=timeout, check=False)\n        output = ((result.stdout or '') + '\n' + (result.stderr or '')).strip()\n        post_command_result(command_id, result.returncode == 0, result.returncode, display_command, output)\n    except subprocess.TimeoutExpired as exc:\n        output = ((exc.stdout or '') + '\n' + (exc.stderr or '')).strip()\n        post_command_result(command_id, False, None, display_command, output or 'Command timed out after %s seconds.' % timeout)\n    except OSError as exc:\n        post_command_result(command_id, False, None, display_command, str(exc))\n    return True\n\n\ndef main():\n    last_heartbeat = 0\n    heartbeat()\n    last_heartbeat = time.time()\n    while True:\n        now = time.time()\n        if now - last_heartbeat >= 60:\n            heartbeat()\n            last_heartbeat = now\n        handled = poll_command()\n        time.sleep(0.5 if handled else 2)\n\n\nif __name__ == '__main__':\n    try:\n        main()\n    except KeyboardInterrupt:\n        sys.exit(0)\n"
+    return r'''#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+import time
+from urllib import request as urllib_request
+from urllib import error as urllib_error
+from urllib.parse import urlparse
 
+
+AGENT_ID = os.environ.get('VITEL_AGENT_ID', '')
+AGENT_NAME = os.environ.get('VITEL_AGENT_NAME', 'vitel-agent')
+AGENT_PASSWORD = os.environ.get('VITEL_AGENT_PASSWORD', '')
+REPORTED_IP = os.environ.get('VITEL_AGENT_REPORTED_IP', '')
+HEARTBEAT_URL = os.environ.get('VITEL_AGENT_URL', '')
+COMMAND_URL = os.environ.get('VITEL_AGENT_COMMAND_URL', '')
+COMMAND_RESULT_URL = os.environ.get('VITEL_AGENT_COMMAND_RESULT_URL', '')
+DEPLOYMENT_POLL_URL = os.environ.get('VITEL_AGENT_DEPLOYMENT_POLL_URL', '')
+DEPLOYMENT_RESULT_URL = os.environ.get('VITEL_AGENT_DEPLOYMENT_RESULT_URL', '')
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def post_json(url, payload, timeout=30):
+    body = json.dumps(payload).encode('utf-8')
+    req = urllib_request.Request(url, data=body, headers={'Content-Type': 'application/json'}, method='POST')
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as response:
+            text = response.read().decode('utf-8')
+            return response.status, json.loads(text) if text else {}
+    except urllib_error.HTTPError as exc:
+        text = exc.read().decode('utf-8', errors='replace')
+        try:
+            data = json.loads(text) if text else {}
+        except json.JSONDecodeError:
+            data = {'error': text or str(exc)}
+        return exc.code, data
+    except (urllib_error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return 0, {'error': str(exc)}
+
+
+def count_lines(command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    if result.returncode != 0:
+        return 0
+    return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
+def get_server_ip():
+    if REPORTED_IP:
+        return REPORTED_IP
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.split()[0]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ''
+
+
+def auth_payload(extra=None):
+    payload = {'agent_id': AGENT_ID, 'name': AGENT_NAME, 'password': AGENT_PASSWORD}
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def heartbeat():
+    if not HEARTBEAT_URL:
+        return False
+    payload = auth_payload({
+        'server_ip': get_server_ip(),
+        'hostname': os.uname().nodename if hasattr(os, 'uname') else '',
+        'containers_count': count_lines(['docker', 'ps', '-aq']),
+        'images_count': count_lines(['docker', 'image', 'ls', '-q']),
+        'networks_count': count_lines(['docker', 'network', 'ls', '-q']),
+        'volumes_count': count_lines(['docker', 'volume', 'ls', '-q']),
+    })
+    status, data = post_json(HEARTBEAT_URL, payload, timeout=30)
+    if 200 <= status < 300:
+        log('Heartbeat accepted at %s' % time.strftime('%Y-%m-%d %H:%M:%S'))
+        return True
+    log('Heartbeat failed status=%s %s' % (status, data.get('error') or data))
+    return False
+
+
+def command_to_process(command):
+    if isinstance(command, list):
+        command = [str(part) for part in command if str(part)]
+        return command, ' '.join(command)
+    command = str(command or '').strip()
+    return ['sh', '-lc', command], command
+
+
+def post_command_result(command_id, success, return_code, command, output):
+    status, data = post_json(COMMAND_RESULT_URL, auth_payload({
+        'command_id': command_id,
+        'success': bool(success),
+        'return_code': return_code,
+        'command': command,
+        'output': output or '',
+    }), timeout=30)
+    if 200 <= status < 300:
+        log('Command %s result posted.' % command_id)
+        return True
+    log('Command %s result post failed status=%s %s' % (command_id, status, data.get('error') or data))
+    return False
+
+
+def poll_command():
+    if not COMMAND_URL or not COMMAND_RESULT_URL:
+        return False
+    status, data = post_json(COMMAND_URL, auth_payload(), timeout=30)
+    if status == 204:
+        return False
+    if not (200 <= status < 300):
+        log('Command poll failed status=%s %s' % (status, data.get('error') or data))
+        return False
+    command_payload = data.get('command')
+    if not command_payload:
+        return False
+    command_id = command_payload.get('id')
+    command = command_payload.get('command')
+    try:
+        timeout = max(1, min(int(command_payload.get('timeout') or 120), 1800))
+    except (TypeError, ValueError):
+        timeout = 120
+    popen_command, display_command = command_to_process(command)
+    if not command_id or not popen_command:
+        return False
+    log('Running pulled command %s: %s' % (command_id, display_command))
+    try:
+        result = subprocess.run(popen_command, capture_output=True, text=True, timeout=timeout, check=False)
+        output = ((result.stdout or '') + '\n' + (result.stderr or '')).strip()
+        post_command_result(command_id, result.returncode == 0, result.returncode, display_command, output)
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or '') + '\n' + (exc.stderr or '')).strip()
+        post_command_result(command_id, False, None, display_command, output or 'Command timed out after %s seconds.' % timeout)
+    except OSError as exc:
+        post_command_result(command_id, False, None, display_command, str(exc))
+    return True
+
+
+def run_process(command, timeout=600, input_text=None):
+    display = ' '.join(command)
+    try:
+        result = subprocess.run(
+            command,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        output = ((result.stdout or '') + '\n' + (result.stderr or '')).strip()
+        return result.returncode == 0, result.returncode, display, output
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or '') + '\n' + (exc.stderr or '')).strip()
+        return False, None, display, output or 'Command timed out after %s seconds.' % timeout
+    except OSError as exc:
+        return False, None, display, str(exc)
+
+
+def registry_host(image_reference):
+    first = str(image_reference or '').split('/')[0]
+    return first if ('.' in first or ':' in first or first == 'localhost') else ''
+
+
+def post_deployment_result(job_id, success, output, error=''):
+    status, data = post_json(DEPLOYMENT_RESULT_URL, auth_payload({
+        'job_id': job_id,
+        'success': bool(success),
+        'output': output or '',
+        'error': error or '',
+    }), timeout=30)
+    if 200 <= status < 300:
+        log('Deployment job %s result posted.' % job_id)
+        return True
+    log('Deployment result post failed status=%s %s' % (status, data.get('error') or data))
+    return False
+
+
+def run_deployment(job):
+    job_id = job.get('id')
+    image_reference = str(job.get('image_reference') or '').strip()
+    container_name = str(job.get('container_name') or '').strip()
+    run_args = job.get('run_args') if isinstance(job.get('run_args'), list) else []
+    username = str(job.get('registry_username') or '').strip()
+    password = str(job.get('registry_password') or '')
+    output_parts = []
+
+    if not job_id or not image_reference or not container_name:
+        post_deployment_result(job_id, False, '', 'Deployment job is missing image or container details.')
+        return True
+
+    host = registry_host(image_reference)
+    if username and password and host:
+        ok, _, display, output = run_process(['docker', 'login', host, '-u', username, '--password-stdin'], timeout=60, input_text=password + '\n')
+        output_parts.append('$ ' + display.replace(password, '********'))
+        output_parts.append(output.replace(password, '********'))
+        if not ok:
+            post_deployment_result(job_id, False, '\n'.join(output_parts), 'Docker registry login failed.')
+            return True
+
+    for command in [
+        ['docker', 'pull', image_reference],
+        ['docker', 'rm', '-f', container_name],
+        ['docker', 'run', '-d', '--name', container_name, '--restart', 'unless-stopped', *[str(arg) for arg in run_args], image_reference],
+    ]:
+        ok, _, display, output = run_process(command, timeout=900)
+        output_parts.append('$ ' + display)
+        if output:
+            output_parts.append(output)
+        if command[:3] == ['docker', 'rm', '-f']:
+            continue
+        if not ok:
+            post_deployment_result(job_id, False, '\n'.join(output_parts), output or 'Deployment command failed.')
+            return True
+
+    post_deployment_result(job_id, True, '\n'.join(output_parts), '')
+    return True
+
+
+def poll_deployment():
+    if not DEPLOYMENT_POLL_URL or not DEPLOYMENT_RESULT_URL:
+        return False
+    status, data = post_json(DEPLOYMENT_POLL_URL, auth_payload(), timeout=30)
+    if status == 204:
+        return False
+    if not (200 <= status < 300):
+        log('Deployment poll failed status=%s %s' % (status, data.get('error') or data))
+        return False
+    job = data.get('job')
+    if not job:
+        return False
+    log('Running deployment job %s: %s' % (job.get('id'), job.get('image_reference')))
+    return run_deployment(job)
+
+
+def main():
+    last_heartbeat = 0
+    last_deployment_poll = 0
+    heartbeat()
+    last_heartbeat = time.time()
+    while True:
+        now = time.time()
+        if now - last_heartbeat >= 60:
+            heartbeat()
+            last_heartbeat = now
+        handled = poll_command()
+        if now - last_deployment_poll >= 30:
+            handled = poll_deployment() or handled
+            last_deployment_poll = now
+        time.sleep(0.5 if handled else 2)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)
+'''
 
 def build_agent_server_source():
     return r'''#!/usr/bin/env python3
@@ -554,18 +836,31 @@ if __name__ == '__main__':
 def build_agent_script(agent, password, request, controller=None, reported_ip=''):
     controller = controller or get_controller_base_url(request)
     heartbeat_url = f'{controller}/api/auth/agent-heartbeat/'
+    command_url = f'{controller}/api/auth/agent-command/'
+    command_result_url = f'{controller}/api/auth/agent-command-result/'
+    deployment_poll_url = f'{controller}/api/registry/deployment-poll/'
+    deployment_result_url = f'{controller}/api/registry/deployment-result/'
     agent_server_b64 = base64.b64encode(build_agent_server_source().encode('utf-8')).decode('ascii')
+    agent_client_b64 = base64.b64encode(build_pull_agent_client_source().encode('utf-8')).decode('ascii')
     return f"""#!/bin/sh
 set -u
+VITEL_AGENT_ID={agent.id}
 VITEL_AGENT_URL={shlex.quote(heartbeat_url)}
+VITEL_AGENT_COMMAND_URL={shlex.quote(command_url)}
+VITEL_AGENT_COMMAND_RESULT_URL={shlex.quote(command_result_url)}
+VITEL_AGENT_DEPLOYMENT_POLL_URL={shlex.quote(deployment_poll_url)}
+VITEL_AGENT_DEPLOYMENT_RESULT_URL={shlex.quote(deployment_result_url)}
 VITEL_AGENT_NAME={shlex.quote(agent.name)}
 VITEL_AGENT_PASSWORD={shlex.quote(password)}
 VITEL_AGENT_PORT={agent.port}
 VITEL_AGENT_REPORTED_IP={shlex.quote(reported_ip or '')}
 VITEL_AGENT_SERVER_B64={shlex.quote(agent_server_b64)}
+VITEL_AGENT_CLIENT_B64={shlex.quote(agent_client_b64)}
 AGENT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PORT_PID_FILE="$AGENT_DIR/vitel-agent-port.pid"
 PORT_SERVER_FILE="$AGENT_DIR/vitel-agent-server.py"
+CLIENT_PID_FILE="$AGENT_DIR/vitel-agent-client.pid"
+CLIENT_FILE="$AGENT_DIR/vitel-agent-client.py"
 
 count_lines() {{
   "$@" 2>/dev/null | wc -l | tr -d ' '
@@ -575,6 +870,10 @@ cleanup() {{
   if [ -f "$PORT_PID_FILE" ]; then
     kill "$(cat "$PORT_PID_FILE")" 2>/dev/null || true
     rm -f "$PORT_PID_FILE"
+  fi
+  if [ -f "$CLIENT_PID_FILE" ]; then
+    kill "$(cat "$CLIENT_PID_FILE")" 2>/dev/null || true
+    rm -f "$CLIENT_PID_FILE"
   fi
 }}
 
@@ -605,10 +904,47 @@ start_port_listener() {{
   fi
 }}
 
+start_pull_client() {{
+  if [ -f "$CLIENT_PID_FILE" ] && kill -0 "$(cat "$CLIENT_PID_FILE")" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  printf "%s" "$VITEL_AGENT_CLIENT_B64" | base64 -d > "$CLIENT_FILE"
+  chmod +x "$CLIENT_FILE"
+
+  PYTHON_BIN=""
+  if command -v python3 >/dev/null 2>&1; then PYTHON_BIN=python3; elif command -v python >/dev/null 2>&1; then PYTHON_BIN=python; fi
+  if [ -z "$PYTHON_BIN" ]; then
+    echo "Python is not available, so pull-based commands and registry deployments cannot run."
+    return 1
+  fi
+
+  (cd "$AGENT_DIR" && \
+    VITEL_AGENT_ID="$VITEL_AGENT_ID" \
+    VITEL_AGENT_NAME="$VITEL_AGENT_NAME" \
+    VITEL_AGENT_PASSWORD="$VITEL_AGENT_PASSWORD" \
+    VITEL_AGENT_REPORTED_IP="$VITEL_AGENT_REPORTED_IP" \
+    VITEL_AGENT_URL="$VITEL_AGENT_URL" \
+    VITEL_AGENT_COMMAND_URL="$VITEL_AGENT_COMMAND_URL" \
+    VITEL_AGENT_COMMAND_RESULT_URL="$VITEL_AGENT_COMMAND_RESULT_URL" \
+    VITEL_AGENT_DEPLOYMENT_POLL_URL="$VITEL_AGENT_DEPLOYMENT_POLL_URL" \
+    VITEL_AGENT_DEPLOYMENT_RESULT_URL="$VITEL_AGENT_DEPLOYMENT_RESULT_URL" \
+    "$PYTHON_BIN" "$CLIENT_FILE") >> "$AGENT_DIR/vitel-agent-client.log" 2>&1 &
+  echo $! > "$CLIENT_PID_FILE"
+  echo "Agent pull client started. It polls deployment jobs every 30 seconds."
+  return 0
+}}
+
 start_port_listener
+start_pull_client || true
 
 while true; do
   start_port_listener
+  if start_pull_client; then
+    sleep 30
+    continue
+  fi
+
   if [ -n "$VITEL_AGENT_REPORTED_IP" ]; then
     SERVER_IP="$VITEL_AGENT_REPORTED_IP"
   else
@@ -620,9 +956,9 @@ while true; do
   NETWORKS=$(count_lines docker network ls -q)
   VOLUMES=$(count_lines docker volume ls -q)
 
-  RESPONSE=$(curl -sS -w "\\n%{{http_code}}" -X POST "$VITEL_AGENT_URL" \\
-    -H "Content-Type: application/json" \\
-    --data "{{\\"agent_id\\":{agent.id},\\"name\\":\\"$VITEL_AGENT_NAME\\",\\"password\\":\\"$VITEL_AGENT_PASSWORD\\",\\"server_ip\\":\\"$SERVER_IP\\",\\"hostname\\":\\"$HOSTNAME\\",\\"containers_count\\":$CONTAINERS,\\"images_count\\":$IMAGES,\\"networks_count\\":$NETWORKS,\\"volumes_count\\":$VOLUMES}}" 2>&1)
+  RESPONSE=$(curl -sS -w "\n%{{http_code}}" -X POST "$VITEL_AGENT_URL" \
+    -H "Content-Type: application/json" \
+    --data "{{\"agent_id\":{agent.id},\"name\":\"$VITEL_AGENT_NAME\",\"password\":\"$VITEL_AGENT_PASSWORD\",\"server_ip\":\"$SERVER_IP\",\"hostname\":\"$HOSTNAME\",\"containers_count\":$CONTAINERS,\"images_count\":$IMAGES,\"networks_count\":$NETWORKS,\"volumes_count\":$VOLUMES}}" 2>&1)
   CURL_STATUS=$?
   HTTP_STATUS=$(printf "%s" "$RESPONSE" | tail -n 1)
   BODY=$(printf "%s" "$RESPONSE" | sed '$d')
@@ -630,12 +966,11 @@ while true; do
     echo "Heartbeat accepted at $(date)"
   else
     echo "Heartbeat failed at $(date) status=$HTTP_STATUS curl=$CURL_STATUS"
-    printf "%s\\n" "$BODY"
+    printf "%s\n" "$BODY"
   fi
   sleep 60
 done
 """
-
 
 def build_agent_uninstall_commands(agent):
     return build_remote_agent_uninstall_command(agent).splitlines()
@@ -1549,7 +1884,25 @@ def build_local_agent_container_install_command(agent, password, request):
         f"CONTROLLER_CONTAINER={shlex.quote(CONTROLLER_CONTAINER_NAME)}",
         'CONTROLLER_HOSTNAME=$(hostname)',
         'echo "Preparing local Docker image: $AGENT_IMAGE"',
-        'docker tag vitel-container-backend:latest "$AGENT_IMAGE"',
+        'prepare_agent_image() {',
+        '  if docker image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then echo "Docker image exists: $AGENT_IMAGE"; return 0; fi',
+        '  for CONTROLLER_CANDIDATE in "$CONTROLLER_CONTAINER" "$CONTROLLER_HOSTNAME"; do',
+        '    if [ -z "$CONTROLLER_CANDIDATE" ]; then continue; fi',
+        "    for SOURCE_IMAGE in $(docker container inspect -f '{{.Image}} {{.Config.Image}}' \"$CONTROLLER_CANDIDATE\" 2>/dev/null || true); do",
+        '      if [ -z "$SOURCE_IMAGE" ] || [ "$SOURCE_IMAGE" = "$AGENT_IMAGE" ]; then continue; fi',
+        '      echo "Trying Docker image source: $SOURCE_IMAGE"',
+        '      if docker tag "$SOURCE_IMAGE" "$AGENT_IMAGE"; then echo "Prepared $AGENT_IMAGE from $SOURCE_IMAGE."; return 0; fi',
+        '    done',
+        '  done',
+        f'  for SOURCE_IMAGE in {" ".join(shlex.quote(candidate) for candidate in AGENT_IMAGE_SOURCE_CANDIDATES)}; do',
+        '    if [ -z "$SOURCE_IMAGE" ] || [ "$SOURCE_IMAGE" = "$AGENT_IMAGE" ]; then continue; fi',
+        '    echo "Trying Docker image source: $SOURCE_IMAGE"',
+        '    if docker tag "$SOURCE_IMAGE" "$AGENT_IMAGE"; then echo "Prepared $AGENT_IMAGE from $SOURCE_IMAGE."; return 0; fi',
+        '  done',
+        '  echo "Unable to prepare $AGENT_IMAGE. Build the application backend image first, or set VITEL_AGENT_SOURCE_IMAGE to an existing local image."',
+        '  return 1',
+        '}',
+        'prepare_agent_image',
         'echo "Checking Docker network: $AGENT_NETWORK"',
         'if docker network inspect "$AGENT_NETWORK" >/dev/null 2>&1; then echo "Docker network exists: $AGENT_NETWORK"; else docker network create "$AGENT_NETWORK"; fi',
         'connect_controller_to_agent_network() {',
@@ -1656,25 +2009,154 @@ def get_agent_image_download_url(request, agent):
     return f'{get_controller_base_url(request)}/api/auth/agent-image/?token={token}'
 
 
+def unique_nonempty_values(values):
+    seen = set()
+    unique_values = []
+    for value in values:
+        value = str(value or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
+def get_controller_image_source_candidates():
+    candidates = []
+    for container in get_controller_container_candidates():
+        inspect_result = run_docker_command([
+            "docker", "container", "inspect", "-f",
+            "{{.Image}}\n{{.Config.Image}}",
+            container,
+        ], timeout=15)
+        if not inspect_result.get("success"):
+            continue
+        candidates.extend(inspect_result.get("output", "").splitlines())
+    return unique_nonempty_values(candidates)
+
+
+def get_agent_image_source_candidates():
+    candidates = unique_nonempty_values([
+        *get_controller_image_source_candidates(),
+        *AGENT_IMAGE_SOURCE_CANDIDATES,
+    ])
+    return [image for image in candidates if image != LOCAL_AGENT_IMAGE]
+
+
 def ensure_local_agent_image():
     inspect_result = run_docker_command(['docker', 'image', 'inspect', LOCAL_AGENT_IMAGE], timeout=20)
-    if inspect_result['success']:
-        return inspect_result
+    attempted_outputs = []
+    if not inspect_result.get('success'):
+        attempted_outputs.append(inspect_result.get('output', ''))
 
-    tag_result = run_docker_command(['docker', 'tag', AGENT_IMAGE_SOURCE, LOCAL_AGENT_IMAGE], timeout=60)
-    if tag_result['success']:
-        return tag_result
+    last_result = inspect_result
+    source_candidates = get_agent_image_source_candidates()
+    for source_image in source_candidates:
+        tag_result = run_docker_command(['docker', 'tag', source_image, LOCAL_AGENT_IMAGE], timeout=60)
+        last_result = tag_result
+        attempted_outputs.append(f'$ docker tag {source_image} {LOCAL_AGENT_IMAGE}')
+        if tag_result.get('output'):
+            attempted_outputs.append(tag_result['output'])
+        if tag_result['success']:
+            return {
+                **tag_result,
+                'output': '\n'.join([
+                    f'Prepared {LOCAL_AGENT_IMAGE} from {source_image}.',
+                    tag_result.get('output', ''),
+                ]).strip(),
+            }
 
+    if inspect_result.get('success'):
+        candidates = ', '.join(source_candidates) or '(none)'
+        return {
+            **inspect_result,
+            'output': '\n'.join([
+                f'Using existing {LOCAL_AGENT_IMAGE}.',
+                f'No configured backend image source could be tagged. Tried source images: {candidates}',
+            ]).strip(),
+        }
+
+    candidates = ', '.join(source_candidates) or '(none)'
     return {
-        **tag_result,
+        **last_result,
         'output': '\n'.join([
-            inspect_result.get('output', ''),
-            tag_result.get('output', ''),
-            f'Unable to prepare {LOCAL_AGENT_IMAGE}. Build the application backend image first, or set VITEL_AGENT_SOURCE_IMAGE to an existing local image.',
+            item for item in attempted_outputs
+            if item
+        ] + [
+            f'Unable to prepare {LOCAL_AGENT_IMAGE}. Build the application backend image first, or set VITEL_AGENT_SOURCE_IMAGE to one of the existing local backend images.',
+            f'Tried source images: {candidates}',
         ]).strip(),
-        'error': f'Unable to prepare {LOCAL_AGENT_IMAGE} from {AGENT_IMAGE_SOURCE}.',
+        'error': f'Unable to prepare {LOCAL_AGENT_IMAGE} from any known backend image.',
     }
 
+
+def get_registry_pull_host_for_request(request):
+    configured_host = os.getenv('VITEL_REGISTRY_PULL_HOST', '').strip()
+    if configured_host:
+        return configured_host.rstrip('/')
+    controller_url = get_controller_base_url(request)
+    hostname = urlparse(controller_url).hostname or get_local_application_host(request)
+    port = os.getenv('VITEL_REGISTRY_PORT', '5000').strip() or '5000'
+    if ':' in hostname and not hostname.startswith('['):
+        hostname = f'[{hostname}]'
+    return f'{hostname}:{port}'
+
+
+def get_agent_registry_repository():
+    return os.getenv('VITEL_AGENT_REGISTRY_REPOSITORY', 'vitel-agent').strip() or 'vitel-agent'
+
+
+def get_agent_registry_tag():
+    return os.getenv('VITEL_AGENT_REGISTRY_TAG', 'v1').strip() or 'v1'
+
+
+def get_agent_registry_push_reference():
+    return build_registry_reference(
+        get_agent_registry_repository(),
+        get_agent_registry_tag(),
+        pull_host=get_default_registry_push_host(),
+    )
+
+
+def get_agent_registry_pull_reference(request):
+    return build_registry_reference(
+        get_agent_registry_repository(),
+        get_agent_registry_tag(),
+        pull_host=get_registry_pull_host_for_request(request),
+    )
+
+
+def ensure_agent_image_in_registry(request):
+    local_result = ensure_local_agent_image()
+    if not local_result.get('success'):
+        return local_result
+
+    push_reference = get_agent_registry_push_reference()
+    tag_result = run_docker_command(['docker', 'tag', LOCAL_AGENT_IMAGE, push_reference], timeout=60)
+    if not tag_result.get('success'):
+        return {
+            **tag_result,
+            'error': f'Unable to tag {LOCAL_AGENT_IMAGE} for registry push.',
+        }
+
+    push_result = run_docker_command(['docker', 'push', push_reference], timeout=900)
+    if not push_result.get('success'):
+        return {
+            **push_result,
+            'error': 'Unable to push the agent image to the local registry. Make sure vitel-registry is running on port 5000.',
+        }
+
+    return {
+        'success': True,
+        'return_code': push_result.get('return_code'),
+        'command': f'docker tag {LOCAL_AGENT_IMAGE} {push_reference} && docker push {push_reference}',
+        'output': '\n'.join([
+            local_result.get('output', ''),
+            tag_result.get('output', ''),
+            push_result.get('output', ''),
+            f'Agent image is available from {get_agent_registry_pull_reference(request)}',
+        ]).strip(),
+    }
 
 def get_manual_agent_bind_host(request, agent):
     if is_local_agent_target(request, agent.server_ip):
@@ -1685,17 +2167,16 @@ def get_manual_agent_bind_host(request, agent):
 def build_manual_agent_install_command(agent, password, request):
     script = build_agent_script(agent, password, request, reported_ip=str(agent.server_ip))
     script_b64 = base64.b64encode(script.encode('utf-8')).decode('ascii')
-    download_url = get_agent_image_download_url(request, agent)
     port = int(agent.port)
     bind_host = get_manual_agent_bind_host(request, agent)
     container_name = REMOTE_AGENT_CONTAINER_NAME
+    pull_reference = get_agent_registry_pull_reference(request)
     return "\n".join([
         f'AGENT_PORT={port}',
         'AGENT_BIND_HOST=' + shlex.quote(bind_host),
         'AGENT_CONTAINER=' + shlex.quote(container_name),
-        'AGENT_IMAGE=' + shlex.quote(LOCAL_AGENT_IMAGE),
-        'curl -fL ' + shlex.quote(download_url) + ' -o vitel-agent.tar',
-        'docker load -i vitel-agent.tar',
+        'AGENT_IMAGE=' + shlex.quote(pull_reference),
+        'docker pull "$AGENT_IMAGE"',
         'docker rm -f "$AGENT_CONTAINER" >/dev/null 2>&1 || true',
         'docker run -d \\',
         '  --name "$AGENT_CONTAINER" \\',
@@ -1706,18 +2187,17 @@ def build_manual_agent_install_command(agent, password, request):
         "  \"$AGENT_IMAGE\" sh -lc 'mkdir -p /tmp/vitel-agent && printf \"%s\" \"$VITEL_AGENT_SCRIPT_B64\" | base64 -d > /tmp/vitel-agent/vitel-agent.sh && chmod +x /tmp/vitel-agent/vitel-agent.sh && exec sh /tmp/vitel-agent/vitel-agent.sh'",
     ])
 
-
 def build_manual_agent_install_output(agent, password, request):
     bind_host = get_manual_agent_bind_host(request, agent)
     return "\n".join([
         f'Agent record created for {agent.name} ({agent.server_ip}:{agent.port}).',
-        'Run these commands on the target server to download the agent image from this application and start it:',
+        'Run these commands on the target server to pull the agent image from this controller registry and start it:',
         '',
         build_manual_agent_install_command(agent, password, request),
         '',
         f'The agent command endpoint will bind to {bind_host}:{agent.port}.',
         'For a different server, make sure this controller can reach that address and port.',
-        'After the container starts, it will heartbeat back to this controller and appear as connected.',
+        'After the container starts, it will heartbeat back to this controller, poll deployment jobs every 30 seconds, and appear as connected.',
     ])
 
 
@@ -1725,7 +2205,7 @@ def build_manual_agent_cleanup_command():
     return "\n".join([
         'docker rm -f ' + shlex.quote(REMOTE_AGENT_CONTAINER_NAME) + ' >/dev/null 2>&1 || true',
         'docker image rm -f ' + shlex.quote(LOCAL_AGENT_IMAGE) + ' >/dev/null 2>&1 || true',
-        'rm -f vitel-agent.tar',
+        'docker image rm -f ' + shlex.quote(get_agent_registry_repository()) + ' >/dev/null 2>&1 || true',
     ])
 
 
@@ -1744,7 +2224,7 @@ def build_remote_agent_install_command(agent, password, request, agent_dir=None,
     script_b64 = base64.b64encode(script.encode('utf-8')).decode('ascii')
     agent_dir_value = shlex.quote(agent_dir) if agent_dir else '$HOME/.vitel-agent'
     container_name = REMOTE_AGENT_CONTAINER_NAME
-    image_name = REMOTE_AGENT_IMAGE
+    image_name = get_agent_registry_pull_reference(request)
     return "\n".join([
         "set -eu",
         f"AGENT_DIR={agent_dir_value}",
@@ -2942,7 +3422,14 @@ def agents(request):
             agent.connected = False
             agent.hostname = ''
             agent.save(update_fields=['connected', 'hostname', 'updated_at'])
-            output = build_manual_agent_install_output(agent, agent_secret, request)
+            image_result = ensure_agent_image_in_registry(request)
+            if not image_result.get('success'):
+                return Response({
+                    **image_result,
+                    'success': False,
+                    'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
+                }, status=status.HTTP_400_BAD_REQUEST)
+            output = '\n'.join([image_result.get('output', ''), build_manual_agent_install_output(agent, agent_secret, request)]).strip()
             return Response({
                 'success': True,
                 'created': False,
@@ -2965,6 +3452,14 @@ def agents(request):
         agent.connected = False
         agent.hostname = ''
         agent.save(update_fields=['connected', 'hostname', 'updated_at'])
+        image_result = ensure_agent_image_in_registry(request)
+        if not image_result.get('success'):
+            return Response({
+                **image_result,
+                'success': False,
+                'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         result, local_install = install_agent_on_target(
             request,
             agent,
@@ -3173,7 +3668,15 @@ def agents(request):
                 'hostname': '',
             },
         )
-        output = build_manual_agent_install_output(agent, agent_secret, request)
+        image_result = ensure_agent_image_in_registry(request)
+        if not image_result.get('success'):
+            agent.delete()
+            return Response({
+                **image_result,
+                'success': False,
+                'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+        output = '\n'.join([image_result.get('output', ''), build_manual_agent_install_output(agent, agent_secret, request)]).strip()
         return Response({
             'success': True,
             'created': created,
@@ -3218,6 +3721,22 @@ def agents(request):
             'hostname': '',
         },
     )
+    image_result = ensure_agent_image_in_registry(request)
+    if not image_result.get('success'):
+        if created:
+            agent.delete()
+        elif previous_agent_values:
+            for field, value in previous_agent_values.items():
+                setattr(agent, field, value)
+            agent.save(update_fields=[*previous_agent_values.keys(), 'updated_at'])
+        return Response({
+            **image_result,
+            'success': False,
+            'created': created,
+            'agent': AgentSerializer(agent).data,
+            'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
     result, local_install = install_agent_on_target(
         request,
         agent,
@@ -3285,41 +3804,21 @@ def agent_image(request):
     if not decode_agent_secret(getattr(agent, 'password_secret', '')):
         return Response({'error': 'Agent credentials are unavailable. Recreate the agent to get fresh install steps.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    image_result = ensure_local_agent_image()
-    if not image_result['success']:
+    image_result = ensure_agent_image_in_registry(request)
+    if not image_result.get('success'):
         return Response({
-            'error': image_result.get('error') or 'Unable to prepare the local agent image.',
+            'success': False,
+            'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
             'output': image_result.get('output', ''),
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    image_file = tempfile.NamedTemporaryFile(prefix='vitel-agent-', suffix='.tar', delete=False)
-    image_file_path = image_file.name
-    image_file.close()
-    save_result = run_docker_command(['docker', 'save', '-o', image_file_path, LOCAL_AGENT_IMAGE], timeout=600)
-    if not save_result['success']:
-        try:
-            os.unlink(image_file_path)
-        except OSError:
-            pass
-        return Response({
-            'error': 'Unable to export the local agent image.',
-            'output': save_result.get('output', ''),
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    file_handle = open(image_file_path, 'rb')
-    response = FileResponse(file_handle, as_attachment=True, filename='vitel-agent.tar', content_type='application/x-tar')
-    original_close = response.close
-
-    def close_with_cleanup():
-        original_close()
-        try:
-            os.unlink(image_file_path)
-        except OSError:
-            pass
-
-    response.close = close_with_cleanup
-    return response
-
+    return Response({
+        'success': True,
+        'image': get_agent_registry_pull_reference(request),
+        'repository': get_agent_registry_repository(),
+        'tag': get_agent_registry_tag(),
+        'output': image_result.get('output', ''),
+    })
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -3365,6 +3864,220 @@ def agent_heartbeat(request):
         'success': True,
         'agent': AgentSerializer(agent).data,
     })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def agent_command(request):
+    agent, password, error_response = authenticate_agent_request_payload(request)
+    if error_response:
+        return error_response
+
+    command_record = AgentCommand.objects.filter(
+        agent=agent,
+        status=AgentCommand.STATUS_PENDING,
+    ).order_by('created_at').first()
+    if not command_record:
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    command_record.status = AgentCommand.STATUS_RUNNING
+    command_record.started_at = timezone.now()
+    command_record.save(update_fields=['status', 'started_at', 'updated_at'])
+    try:
+        command = json.loads(command_record.command)
+    except json.JSONDecodeError:
+        command = command_record.command
+    return Response({
+        'success': True,
+        'command': {
+            'id': command_record.id,
+            'command': command,
+            'timeout': command_record.timeout,
+        },
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def agent_command_result(request):
+    agent, password, error_response = authenticate_agent_request_payload(request)
+    if error_response:
+        return error_response
+
+    command_id = request.data.get('command_id')
+    try:
+        command_record = AgentCommand.objects.get(agent=agent, id=command_id)
+    except (AgentCommand.DoesNotExist, ValueError):
+        return Response({'success': False, 'error': 'Command was not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    command_record.status = AgentCommand.STATUS_COMPLETED if request.data.get('success') else AgentCommand.STATUS_FAILED
+    command_record.success = bool(request.data.get('success'))
+    command_record.return_code = request.data.get('return_code')
+    command_record.output = str(request.data.get('output') or '')
+    command_record.completed_at = timezone.now()
+    command_record.save(update_fields=['status', 'success', 'return_code', 'output', 'completed_at', 'updated_at'])
+    return Response({'success': True})
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def registry_deployment_poll(request):
+    agent, password, error_response = authenticate_agent_request_payload(request)
+    if error_response:
+        return error_response
+
+    job = DeploymentJob.objects.filter(agent=agent, status=DeploymentJob.STATUS_PENDING).order_by('created_at').first()
+    if not job:
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    mark_deployment_job_running(job)
+    return Response({
+        'success': True,
+        'job': {
+            'id': job.id,
+            'image_reference': job.image_reference,
+            'container_name': job.container_name,
+            'run_args': job.run_args or [],
+            'registry_username': job.registry_username,
+            'registry_password': decode_agent_secret(job.registry_password_secret),
+        },
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def registry_deployment_result(request):
+    agent, password, error_response = authenticate_agent_request_payload(request)
+    if error_response:
+        return error_response
+
+    try:
+        job = DeploymentJob.objects.get(agent=agent, id=request.data.get('job_id'))
+    except (DeploymentJob.DoesNotExist, ValueError):
+        return Response({'success': False, 'error': 'Deployment job was not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    success = bool(request.data.get('success'))
+    output = str(request.data.get('output') or '')
+    error_text = str(request.data.get('error') or '')
+    mark_deployment_job_complete(job, success, output=output, error=error_text)
+    return Response({'success': True, 'job': DeploymentJobSerializer(job).data})
+
+
+def parse_run_args(value):
+    if value in (None, ''):
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if str(item).strip()]
+    except (TypeError, json.JSONDecodeError):
+        pass
+    return shlex.split(str(value))
+
+
+def normalize_deploy_container_name(value, image_name):
+    raw = str(value or '').strip() or str(image_name or '').split('/')[-1]
+    name = re.sub(r'[^a-zA-Z0-9_.-]+', '-', raw).strip('-_.')
+    return name[:120] or f'deploy-{uuid.uuid4().hex[:8]}'
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def registry_images(request):
+    try:
+        pull_host = get_registry_pull_host_for_request(request)
+        images = sync_registry_images(owner=request.user, pull_host=pull_host)
+    except RegistryClientError as exc:
+        return Response({'success': False, 'error': str(exc), 'images': []}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({'success': True, 'images': RegistryImageSerializer(images, many=True).data})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def registry_tags(request):
+    repository_name = str(request.query_params.get('image') or request.query_params.get('repository') or '').strip()
+    if not repository_name:
+        try:
+            pull_host = get_registry_pull_host_for_request(request)
+            images = sync_registry_images(owner=request.user, pull_host=pull_host)
+        except RegistryClientError as exc:
+            return Response({'success': False, 'error': str(exc), 'tags': []}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'success': True,
+            'tags': [
+                {
+                    'image': image.name,
+                    'tag': image.tag,
+                    'reference': image.reference,
+                    'repository': image.repository.name,
+                }
+                for image in images
+            ],
+        })
+    try:
+        tags = list_registry_tags(repository_name)
+    except RegistryClientError as exc:
+        return Response({'success': False, 'error': str(exc), 'tags': []}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'success': True, 'image': repository_name, 'tags': tags})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def registry_deploy(request):
+    if not user_has_operation(request.user, 'create_deployment'):
+        return Response({'success': False, 'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+
+    agent_id = request.data.get('agent_id') or request.data.get('server_id')
+    if not agent_id or str(agent_id) == 'local':
+        return Response({'success': False, 'error': 'Select a connected agent for registry deployment.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        agent = Agent.objects.get(owner=request.user, id=agent_id)
+    except (Agent.DoesNotExist, ValueError):
+        return Response({'success': False, 'error': 'Selected agent was not found.'}, status=status.HTTP_404_NOT_FOUND)
+    if not agent.connected:
+        return Response({'success': False, 'error': 'Selected agent is down.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    image = None
+    image_id = request.data.get('image_id')
+    if image_id:
+        try:
+            image = RegistryImage.objects.select_related('repository').get(id=image_id)
+        except (RegistryImage.DoesNotExist, ValueError):
+            return Response({'success': False, 'error': 'Selected registry image was not found.'}, status=status.HTTP_404_NOT_FOUND)
+    else:
+        image_name = str(request.data.get('image') or request.data.get('image_name') or '').strip()
+        tag = str(request.data.get('tag') or '').strip()
+        if not image_name or not tag:
+            return Response({'success': False, 'error': 'Image and tag are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        image = RegistryImage.objects.select_related('repository').filter(name=image_name, tag=tag).first()
+        if not image:
+            try:
+                sync_registry_images(owner=request.user, pull_host=get_registry_pull_host_for_request(request))
+            except RegistryClientError:
+                pass
+            image = RegistryImage.objects.select_related('repository').filter(name=image_name, tag=tag).first()
+        if not image:
+            return Response({'success': False, 'error': 'Image tag was not found in the registry.'}, status=status.HTTP_404_NOT_FOUND)
+
+    image.repository.pull_host = get_registry_pull_host_for_request(request)
+    image.repository.save(update_fields=['pull_host', 'updated_at'])
+    container_name = normalize_deploy_container_name(request.data.get('container_name'), image.name)
+    registry_password = str(request.data.get('registry_password') or '')
+    job = create_deployment_job(
+        owner=request.user,
+        agent=agent,
+        image=image,
+        image_reference=image.reference,
+        container_name=container_name,
+        run_args=parse_run_args(request.data.get('run_args')),
+        registry_username=str(request.data.get('registry_username') or '').strip(),
+        registry_password_secret=encode_agent_secret(registry_password),
+    )
+    return Response({'success': True, 'job': DeploymentJobSerializer(job).data}, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET', 'POST'])

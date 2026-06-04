@@ -1,17 +1,47 @@
-version: "3.9"
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: vitel-redis
+    restart: always
+    volumes:
+      - /opt/vitel/redis:/data
+    networks:
+      - vitel-network
+
+  registry:
+    image: registry:3
+    container_name: vitel-registry
+    restart: always
+    ports:
+      - "5000:5000"
+    volumes:
+      - /opt/vitel/registry:/var/lib/registry
+    networks:
+      - vitel-network
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: container-ui-project-backend:latest
     container_name: vitel-backend
+    restart: always
     ports:
       - "8000:8000"
+    environment:
+      VITEL_REGISTRY_INTERNAL_URL: http://registry:5000
+      VITEL_REGISTRY_PUSH_HOST: localhost:5000
+      VITEL_AGENT_REGISTRY_REPOSITORY: vitel-agent
+      VITEL_AGENT_REGISTRY_TAG: v1
+      VITEL_AGENT_SOURCE_IMAGE: container-ui-project-backend:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/db.sqlite3:/app/db.sqlite3
       - /home:/home:ro
       - /root:/root:ro
+    depends_on:
+      - redis
+      - registry
     networks:
       - vitel-network
     
@@ -20,6 +50,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: vitel-frontend
+    restart: always
     ports:
       - "3000:3000"
     depends_on:

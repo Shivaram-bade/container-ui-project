@@ -10,6 +10,7 @@ function App() {
     '/manual-create-container',
     '/build-image',
     '/deployment',
+    '/registry',
     '/network',
     '/volume',
     '/server-info',

@@ -130,6 +130,39 @@ class AgentCommand(models.Model):
         ordering = ['created_at']
 
 
+class RecycledContainer(models.Model):
+    """Deleted Docker container snapshot that can be restored on its original target."""
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='recycled_containers')
+    agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.SET_NULL, related_name='recycled_containers')
+    target_server_id = models.CharField(max_length=64, default='local')
+    agent_name = models.CharField(max_length=150, blank=True)
+    agent_server_ip = models.CharField(max_length=64, blank=True)
+    container_id = models.CharField(max_length=128)
+    container_name = models.CharField(max_length=255)
+    image = models.CharField(max_length=512, blank=True)
+    status = models.CharField(max_length=255, blank=True)
+    inspect_data = models.JSONField(default=dict, blank=True)
+    restored = models.BooleanField(default=False)
+    restored_at = models.DateTimeField(null=True, blank=True)
+    restore_output = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def source_label(self):
+        if self.agent_name:
+            return self.agent_name
+        if self.agent_server_ip:
+            return self.agent_server_ip
+        return 'Application server'
+
+    def __str__(self):
+        return f'{self.container_name} deleted from {self.source_label}'
+
+    class Meta:
+        ordering = ['-created_at']
+
+
 class RegistryRepository(models.Model):
     """Docker registry repository known to the controller."""
     owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='registry_repositories')

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
-    Agent, DeploymentHistory, DeploymentJob, RBACGroup, RegistryImage,
+    Agent, DeploymentHistory, DeploymentJob, RBACGroup, RecycledContainer, RegistryImage,
     RegistryRepository, UserProfile, LoginHistory
 )
 
@@ -100,6 +100,22 @@ class AgentSerializer(serializers.ModelSerializer):
             'connected', 'last_seen', 'hostname', 'containers_count', 'images_count',
             'networks_count', 'volumes_count', 'created_at', 'updated_at',
         ]
+
+
+class RecycledContainerSerializer(serializers.ModelSerializer):
+    source_label = serializers.CharField(read_only=True)
+    agent_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecycledContainer
+        fields = [
+            'id', 'agent_id', 'target_server_id', 'agent_name', 'agent_server_ip', 'source_label',
+            'container_id', 'container_name', 'image', 'status', 'restored',
+            'restore_output', 'created_at', 'updated_at', 'restored_at',
+        ]
+
+    def get_agent_id(self, instance):
+        return instance.target_server_id or (instance.agent_id or 'local')
 
 
 class RegistryRepositorySerializer(serializers.ModelSerializer):

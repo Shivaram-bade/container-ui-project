@@ -182,6 +182,17 @@ export const authService = {
     });
   },
 
+  listRecycledContainers: () => {
+    return api.get('/api/auth/container-recycle-bin/');
+  },
+
+  restoreRecycledContainer: (recycleId, serverId) => {
+    return api.post('/api/auth/container-recycle-bin/', {
+      id: recycleId,
+      ...(serverId ? { server_id: serverId } : {}),
+    });
+  },
+
   attachNetwork: (containerId, networkId, serverId) => {
     return api.post('/api/auth/container-network/', {
       container_id: containerId,

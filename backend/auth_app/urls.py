@@ -19,6 +19,7 @@ urlpatterns = [
     path('manual-create-container/', views.manual_create_container, name='manual_create_container'),
     path('container-detail/', views.container_detail, name='container_detail'),
     path('container-action/', views.container_action, name='container_action'),
+    path('container-recycle-bin/', views.container_recycle_bin, name='container_recycle_bin'),
     path('container-network/', views.container_network, name='container_network'),
     path('connect-container/', views.connect_container, name='connect_container'),
     path('connect-volume/', views.connect_volume, name='connect_volume'),

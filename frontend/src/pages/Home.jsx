@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
 import '../styles/Home.css';
@@ -106,6 +106,7 @@ const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
 const LOCAL_SERVER_ID = 'local';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
 const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, rbacAction, userProfileAction, ...agentActions];
+const DashboardBackContext = createContext(null);
 
 const getStoredUser = () => {
   try {
@@ -147,13 +148,25 @@ const renderNavItem = (action, active, onClick) => (
 );
 
 function PanelIntro({ title, description, children }) {
+  const onBackToDashboard = useContext(DashboardBackContext);
+  const hasActions = Boolean(children) || Boolean(onBackToDashboard);
+
   return (
     <div className="panel-intro">
       <div className="panel-intro-copy">
         <h2>{title}</h2>
         {description && <p>{description}</p>}
       </div>
-      {children ? <div className="panel-intro-actions">{children}</div> : null}
+      {hasActions ? (
+        <div className="panel-intro-actions">
+          {children}
+          {onBackToDashboard ? (
+            <button type="button" className="home-secondary-button dashboard-back-button" onClick={onBackToDashboard}>
+              Back to Dashboard
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -274,7 +287,7 @@ export default function Home() {
   const location = useLocation();
   const navigate = useNavigate();
   const [activeAction, setActiveAction] = useState(() => getActionForPath(location.pathname));
-  const [manualMenuOpen, setManualMenuOpen] = useState(true);
+  const [manualMenuOpen, setManualMenuOpen] = useState(false);
   const [rbacMenuOpen, setRbacMenuOpen] = useState(false);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [serverInfo, setServerInfo] = useState(null);
@@ -305,6 +318,13 @@ export default function Home() {
   const [containerDetailLoading, setContainerDetailLoading] = useState(false);
   const [containerActionLoading, setContainerActionLoading] = useState(false);
   const [containerActionMessage, setContainerActionMessage] = useState('');
+  const [recycledContainers, setRecycledContainers] = useState([]);
+  const [recycledContainersLoading, setRecycledContainersLoading] = useState(false);
+  const [recycledContainersError, setRecycledContainersError] = useState('');
+  const [restoreContainerTarget, setRestoreContainerTarget] = useState(null);
+  const [restoreContainerServerId, setRestoreContainerServerId] = useState('');
+  const [restoreContainerLoading, setRestoreContainerLoading] = useState(false);
+  const [restoreContainerMessage, setRestoreContainerMessage] = useState('');
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [connectModalPosition, setConnectModalPosition] = useState({ x: 100, y: 100 });
   const [connectModalDrag, setConnectModalDrag] = useState(null);
@@ -428,16 +448,7 @@ export default function Home() {
   const [volumeDeleteMessage, setVolumeDeleteMessage] = useState('');
   const [agentName, setAgentName] = useState('');
   const [agentServerIp, setAgentServerIp] = useState('');
-  const [agentInstallMode, setAgentInstallMode] = useState('manual');
-  const [agentSshUsername, setAgentSshUsername] = useState('');
-  const [agentSshPort, setAgentSshPort] = useState('22');
-  const [agentSshAuthType, setAgentSshAuthType] = useState('password');
   const [agentPort, setAgentPort] = useState('19541');
-  const [agentPassword, setAgentPassword] = useState('');
-  const [agentPasswordVisible, setAgentPasswordVisible] = useState(false);
-  const [agentSshPrivateKey, setAgentSshPrivateKey] = useState('');
-  const [agentSshKeyPassphrase, setAgentSshKeyPassphrase] = useState('');
-  const [agentSshKeyPassphraseVisible, setAgentSshKeyPassphraseVisible] = useState(false);
   const [agentTab, setAgentTab] = useState('create');
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [agentDeleteLoading, setAgentDeleteLoading] = useState(false);
@@ -519,21 +530,13 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (activeAction.id.startsWith('agent-')) {
-      setAgentMenuOpen(true);
-    }
-  }, [activeAction.id]);
-
-  useEffect(() => {
-    if (activeAction.id === 'rbac') {
-      setRbacMenuOpen(true);
-    }
-  }, [activeAction.id]);
-
   const handleActionSelect = (action) => {
     setActiveAction(action);
     navigate(action.path);
+  };
+
+  const handleBackToDashboard = () => {
+    handleActionSelect(dashboardAction);
   };
 
   const handleOpenUserProfile = () => {
@@ -731,27 +734,16 @@ export default function Home() {
     event.preventDefault();
     setAgentLoading(true);
     setAgentMessage('');
-    const manualInstall = agentInstallMode === 'manual';
-    setAgentCreateOutput(manualInstall ? 'Creating manual agent install steps...\n' : 'Starting remote agent setup...\n');
+    setAgentCreateOutput('Creating Docker agent install command...\n');
     setAgentCreateOutputOpen(true);
 
     try {
       const response = await authService.createAgent({
         name: agentName,
         server_ip: agentServerIp,
-        install_method: manualInstall ? 'manual' : 'ssh',
-        ssh_username: manualInstall ? '' : agentSshUsername,
-        ssh_port: agentSshPort,
-        ssh_auth_type: manualInstall ? 'manual' : agentSshAuthType,
-        ssh_private_key: !manualInstall && agentSshAuthType === 'key' ? encodeAgentPassword(agentSshPrivateKey) : '',
-        ssh_private_key_encoding: !manualInstall && agentSshAuthType === 'key' ? 'base64' : '',
-        ssh_key_passphrase: !manualInstall && agentSshAuthType === 'key' && agentSshKeyPassphrase ? encodeAgentPassword(agentSshKeyPassphrase) : '',
-        ssh_key_passphrase_encoding: !manualInstall && agentSshAuthType === 'key' && agentSshKeyPassphrase ? 'base64' : '',
+        install_method: 'docker',
         port: agentPort,
-        local_install: !manualInstall && isSameBrowserHost(agentServerIp),
         browser_hostname: window.location.hostname,
-        password: !manualInstall && agentSshAuthType === 'password' ? encodeAgentPassword(agentPassword) : '',
-        password_encoding: !manualInstall && agentSshAuthType === 'password' ? 'base64' : '',
       });
       const successMessage = response.data.manual_install
         ? 'Agent install steps created. Run them on the target server.'
@@ -765,16 +757,7 @@ export default function Home() {
       setAgentMessage(successMessage);
       setAgentName('');
       setAgentServerIp('');
-      setAgentSshUsername('');
-      setAgentSshPort('22');
-      setAgentInstallMode('manual');
-      setAgentSshAuthType('password');
       setAgentPort('19541');
-      setAgentPassword('');
-      setAgentPasswordVisible(false);
-      setAgentSshPrivateKey('');
-      setAgentSshKeyPassphrase('');
-      setAgentSshKeyPassphraseVisible(false);
       loadAgents();
     } catch (error) {
       const data = error.response?.data;
@@ -1209,12 +1192,30 @@ export default function Home() {
     }
   };
 
+  const loadRecycledContainers = async () => {
+    setRecycledContainersLoading(true);
+    setRecycledContainersError('');
+    try {
+      const response = await authService.listRecycledContainers();
+      setRecycledContainers(response.data.containers || []);
+    } catch (error) {
+      const data = error.response?.data;
+      setRecycledContainers([]);
+      setRecycledContainersError(data?.error || 'Unable to load container recycle bin.');
+    } finally {
+      setRecycledContainersLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (isContainerActive && (containerTab === 'existing' || containerTab === 'stopped')) {
       loadContainers(getSelectedDockerServerId());
       loadNetworks(getSelectedDockerServerId());
       loadVolumes(getSelectedDockerServerId());
       loadImages(getSelectedDockerServerId());
+    }
+    if (isContainerActive && containerTab === 'recyclebin') {
+      loadRecycledContainers();
     }
   }, [isContainerActive, containerTab, containerServerId]);
 
@@ -1250,12 +1251,17 @@ export default function Home() {
     setContainerActionLoading(true);
 
     try {
-      await authService.containerAction(
+      const response = await authService.containerAction(
         selectedContainer.ID || selectedContainer.Id || selectedContainer.id,
         action,
         getSelectedDockerServerId()
       );
-      setContainerActionMessage(`Container ${action}ed successfully.`);
+      if (action === 'delete' && response.data?.recycled_container) {
+        setContainerActionMessage(`Container deleted successfully and moved to recycle bin from ${response.data.recycled_container.source_label}.`);
+        loadRecycledContainers();
+      } else {
+        setContainerActionMessage(`Container ${action}ed successfully.`);
+      }
       loadContainers(getSelectedDockerServerId());
       loadAgents();
       setTimeout(() => setContainerActionMessage(''), 3000);
@@ -1264,6 +1270,48 @@ export default function Home() {
       setContainerActionMessage(data?.error || data?.output || `Failed to ${action} container.`);
     } finally {
       setContainerActionLoading(false);
+    }
+  };
+
+  const handleOpenRestoreContainer = (container) => {
+    const expectedServerId = String(container.agent_id || 'local');
+    setRestoreContainerTarget(container);
+    setRestoreContainerServerId(expectedServerId === 'local' ? '' : expectedServerId);
+    setRestoreContainerMessage(`Restoring ${container.container_name}. Please select ${container.source_label}, the agent server this container was deleted from.`);
+  };
+
+  const handleCancelRestoreContainer = () => {
+    if (restoreContainerLoading) return;
+    setRestoreContainerTarget(null);
+    setRestoreContainerServerId('');
+    setRestoreContainerMessage('');
+  };
+
+  const handleConfirmRestoreContainer = async () => {
+    if (!restoreContainerTarget) return;
+    setRestoreContainerLoading(true);
+    setRestoreContainerMessage(`Restoring ${restoreContainerTarget.container_name} on ${restoreContainerTarget.source_label}...`);
+    try {
+      const response = await authService.restoreRecycledContainer(
+        restoreContainerTarget.id,
+        restoreContainerServerId || LOCAL_SERVER_ID
+      );
+      setRestoreContainerMessage(response.data?.output || `Container ${restoreContainerTarget.container_name} restored successfully.`);
+      await loadRecycledContainers();
+      await loadAgents();
+      if (containerServerId === restoreContainerServerId || (!containerServerId && !restoreContainerServerId)) {
+        await loadContainers(getSelectedDockerServerId());
+      }
+      window.setTimeout(() => {
+        setRestoreContainerTarget(null);
+        setRestoreContainerServerId('');
+        setRestoreContainerMessage('');
+      }, 1400);
+    } catch (error) {
+      const data = error.response?.data;
+      setRestoreContainerMessage(data?.error || data?.output || 'Unable to restore container.');
+    } finally {
+      setRestoreContainerLoading(false);
     }
   };
 
@@ -1304,23 +1352,35 @@ export default function Home() {
       return;
     }
     if (target === 'images') {
+      setContainerServerId(dashboardServerId);
       setImageTab('delete');
       handleActionSelect(buildImageAction);
       return;
     }
     if (target === 'volumes') {
+      setContainerServerId(dashboardServerId);
       setVolumeTab('delete');
       handleActionSelect(manualActions[3]);
       return;
     }
     if (target === 'networks') {
+      setContainerServerId(dashboardServerId);
       setNetworkTab('delete');
       handleActionSelect(manualActions[2]);
       return;
     }
     if (target === 'deployments') {
+      setDeploymentServerId(dashboardServerId);
       setDeploymentTab('existing');
       handleActionSelect(deploymentAction);
+      return;
+    }
+    if (target === 'agents') {
+      handleActionSelect(agentActions[1]);
+      return;
+    }
+    if (target === 'server-health') {
+      handleActionSelect(serverInfoAction);
     }
   };
 
@@ -2816,15 +2876,18 @@ export default function Home() {
             <h1>{activeAction.title}</h1>
             <p>{activeAction.description}</p>
           </div>
-          <button type="button" className="home-user-card" onClick={handleOpenUserProfile}>
-            <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
-            <span className="home-user-copy"><span>Workspace</span>
-            <strong>{user?.name || user?.username || 'Signed-in user'}</strong>
-            <small>User Profile</small></span>
-          </button>
+          <div className="home-header-actions">
+            <button type="button" className="home-user-card" onClick={handleOpenUserProfile}>
+              <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
+              <span className="home-user-copy"><span>Workspace</span>
+              <strong>{user?.name || user?.username || 'Signed-in user'}</strong>
+              <small>User Profile</small></span>
+            </button>
+          </div>
         </header>
 
-        {isDashboardActive ? (
+        <DashboardBackContext.Provider value={isDashboardActive ? null : handleBackToDashboard}>
+          {isDashboardActive ? (
           <DashboardPanel
             dashboardServerId={dashboardServerId}
             onDashboardServerIdChange={setDashboardServerId}
@@ -2907,16 +2970,7 @@ export default function Home() {
             mode={isCreateAgentActive ? 'create' : 'connected'}
             agentName={agentName}
             agentServerIp={agentServerIp}
-            agentInstallMode={agentInstallMode}
-            agentSshUsername={agentSshUsername}
-            agentSshPort={agentSshPort}
-            agentSshAuthType={agentSshAuthType}
             agentPort={agentPort}
-            agentPassword={agentPassword}
-            agentPasswordVisible={agentPasswordVisible}
-            agentSshPrivateKey={agentSshPrivateKey}
-            agentSshKeyPassphrase={agentSshKeyPassphrase}
-            agentSshKeyPassphraseVisible={agentSshKeyPassphraseVisible}
             agentTab={agentTab}
             agentLoading={agentLoading}
             agentDeleteLoading={agentDeleteLoading}
@@ -2933,16 +2987,7 @@ export default function Home() {
             selectedAgentId={selectedAgentId}
             onAgentNameChange={setAgentName}
             onAgentServerIpChange={setAgentServerIp}
-            onAgentInstallModeChange={setAgentInstallMode}
-            onAgentSshUsernameChange={setAgentSshUsername}
-            onAgentSshPortChange={setAgentSshPort}
-            onAgentSshAuthTypeChange={setAgentSshAuthType}
             onAgentPortChange={setAgentPort}
-            onAgentPasswordChange={setAgentPassword}
-            onAgentPasswordVisibleChange={setAgentPasswordVisible}
-            onAgentSshPrivateKeyChange={setAgentSshPrivateKey}
-            onAgentSshKeyPassphraseChange={setAgentSshKeyPassphrase}
-            onAgentSshKeyPassphraseVisibleChange={setAgentSshKeyPassphraseVisible}
             onAgentTabChange={setAgentTab}
             onSelectedAgentChange={setSelectedAgentId}
             onCreateAgent={handleCreateAgent}
@@ -2984,6 +3029,13 @@ export default function Home() {
             containers={containers}
             containersLoading={containersLoading}
             containersError={containersError}
+            recycledContainers={recycledContainers}
+            recycledContainersLoading={recycledContainersLoading}
+            recycledContainersError={recycledContainersError}
+            restoreContainerTarget={restoreContainerTarget}
+            restoreContainerServerId={restoreContainerServerId}
+            restoreContainerLoading={restoreContainerLoading}
+            restoreContainerMessage={restoreContainerMessage}
             selectedContainer={selectedContainer}
             selectedContainerDetail={selectedContainerDetail}
             containerDetailLoading={containerDetailLoading}
@@ -3046,6 +3098,11 @@ export default function Home() {
             onContainerTabChange={setContainerTab}
             onSelectContainer={handleSelectContainer}
             onContainerAction={handleContainerAction}
+            onOpenRestoreContainer={handleOpenRestoreContainer}
+            onConfirmRestoreContainer={handleConfirmRestoreContainer}
+            onCancelRestoreContainer={handleCancelRestoreContainer}
+            onRestoreContainerServerIdChange={setRestoreContainerServerId}
+            onRefreshRecycleBin={loadRecycledContainers}
             onContainerLogs={handleContainerLogs}
             onCloseContainerLogOutput={() => {
               setContainerLogOutputOpen(false);
@@ -3299,7 +3356,8 @@ export default function Home() {
               Open
             </button>
           </section>
-        )}
+          )}
+        </DashboardBackContext.Provider>
       </main>
     </div>
   );
@@ -3333,11 +3391,15 @@ function DashboardPanel({
   const selectedServer = serverOptions.find((agent) => String(agent.id) === String(dashboardServerId || LOCAL_SERVER_ID)) || serverOptions[0];
   const runningContainers = containers.filter(isContainerRunning);
   const stoppedContainers = containers.filter((container) => !isContainerRunning(container));
-  const loading = containersLoading || imagesLoading || networksLoading || volumesLoading || deploymentsLoading;
+  const connectedAgents = agents.filter((agent) => agent.id !== LOCAL_SERVER_ID && agent.connected);
+  const totalManagedServers = Math.max(ensureLocalServerOption(agents).length, 1);
+  const loading = containersLoading || imagesLoading || networksLoading || volumesLoading || deploymentsLoading || agentsLoading;
   const errors = [containersError, imagesError, networksError, volumesError].filter(Boolean);
   const cards = [
     { key: 'running', title: 'Running Containers', value: runningContainers.length, meta: 'Active workloads', visual: 'containers' },
     { key: 'stopped', title: 'Stopped containers', value: stoppedContainers.length, meta: 'Ready to start', visual: 'stopped' },
+    { key: 'agents', title: 'Connected Agents', value: connectedAgents.length, meta: `${totalManagedServers} managed server(s)`, visual: 'agents' },
+    { key: 'server-health', title: 'Server Health', value: getAgentStatus(selectedServer).label, meta: selectedServer?.hostname || selectedServer?.server_ip || 'Application server', visual: 'health' },
     { key: 'volumes', title: 'Volumes', value: volumes.length, meta: 'Persistent storage', visual: 'volumes' },
     { key: 'networks', title: 'Networks', value: networks.length, meta: 'Connection fabric', visual: 'networks' },
     { key: 'images', title: 'Images', value: images.length, meta: 'Build artifacts', visual: 'images' },
@@ -3401,11 +3463,87 @@ function DashboardPanel({
 }
 
 function DashboardVisual({ type }) {
+  const scenes = {
+    containers: (
+      <>
+        <span className="dv-node node-a" />
+        <span className="dv-node node-b" />
+        <span className="dv-flow flow-a" />
+        <span className="dv-container c-a" />
+        <span className="dv-container c-b" />
+        <span className="dv-pulse green" />
+      </>
+    ),
+    stopped: (
+      <>
+        <span className="dv-node inactive node-a" />
+        <span className="dv-container inactive c-a" />
+        <span className="dv-container inactive c-b" />
+        <span className="dv-sleep-line line-a" />
+        <span className="dv-sleep-line line-b" />
+      </>
+    ),
+    agents: (
+      <>
+        <span className="dv-server rack-a" />
+        <span className="dv-server rack-b" />
+        <span className="dv-monitor-ring" />
+        <span className="dv-packet packet-a" />
+        <span className="dv-packet packet-b" />
+      </>
+    ),
+    health: (
+      <>
+        <span className="dv-health-core" />
+        <span className="dv-heartbeat beat-a" />
+        <span className="dv-heartbeat beat-b" />
+        <span className="dv-pulse green" />
+      </>
+    ),
+    volumes: (
+      <>
+        <span className="dv-cylinder cyl-a" />
+        <span className="dv-cylinder cyl-b" />
+        <span className="dv-cylinder cyl-c" />
+        <span className="dv-disk-orbit" />
+      </>
+    ),
+    networks: (
+      <>
+        <span className="dv-link link-a" />
+        <span className="dv-link link-b" />
+        <span className="dv-link link-c" />
+        <span className="dv-node node-a" />
+        <span className="dv-node node-b" />
+        <span className="dv-node node-c" />
+        <span className="dv-packet packet-a" />
+        <span className="dv-packet packet-b" />
+      </>
+    ),
+    images: (
+      <>
+        <span className="dv-image-layer layer-a" />
+        <span className="dv-image-layer layer-b" />
+        <span className="dv-image-layer layer-c" />
+        <span className="dv-scanline" />
+      </>
+    ),
+    deployments: (
+      <>
+        <span className="dv-pipeline" />
+        <span className="dv-stage stage-a" />
+        <span className="dv-stage stage-b" />
+        <span className="dv-stage stage-c" />
+        <span className="dv-packet packet-a" />
+      </>
+    ),
+  };
+
   return (
-    <div className={'dashboard-visual ' + type} aria-hidden="true">
-      <i />
-      <i />
-      <i />
+    <div className={'dashboard-visual dashboard-visual-scene ' + type} aria-hidden="true">
+      <span className="dv-glow" />
+      <span className="dv-grid" />
+      {scenes[type] || scenes.containers}
     </div>
   );
 }
@@ -3521,6 +3659,13 @@ function CreateContainerPanel({
   containers,
   containersLoading,
   containersError,
+  recycledContainers,
+  recycledContainersLoading,
+  recycledContainersError,
+  restoreContainerTarget,
+  restoreContainerServerId,
+  restoreContainerLoading,
+  restoreContainerMessage,
   selectedContainer,
   selectedContainerDetail,
   containerDetailLoading,
@@ -3583,6 +3728,11 @@ function CreateContainerPanel({
   onContainerTabChange,
   onSelectContainer,
   onContainerAction,
+  onOpenRestoreContainer,
+  onConfirmRestoreContainer,
+  onCancelRestoreContainer,
+  onRestoreContainerServerIdChange,
+  onRefreshRecycleBin,
   onContainerLogs,
   onConnectVolume,
   onConnectVolumeGui,
@@ -3709,6 +3859,15 @@ function CreateContainerPanel({
           onClick={() => onContainerTabChange('stopped')}
         >
           Stopped containers
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={containerTab === 'recyclebin'}
+          className={containerTab === 'recyclebin' ? 'active' : ''}
+          onClick={() => onContainerTabChange('recyclebin')}
+        >
+          Container recycle bin
         </button>
       </div>
 
@@ -3995,9 +4154,63 @@ function CreateContainerPanel({
             </div>
           )}
 
-          {containersError && !selectedTargetServerDown && <p className="build-message error">{containersError}</p>}
+          {containersError && !selectedTargetServerDown && containerTab !== 'recyclebin' && <p className="build-message error">{containersError}</p>}
+          {recycledContainersError && containerTab === 'recyclebin' && <p className="build-message error">{recycledContainersError}</p>}
           
-          {selectedTargetServerDown ? null : containersLoading ? (
+          {containerTab === 'recyclebin' ? (
+            recycledContainersLoading ? (
+              <p className="resource-empty-state">Loading container recycle bin...</p>
+            ) : recycledContainers.length > 0 ? (
+              <div className="containers-list">
+                <div className="resource-delete-toolbar">
+                  <p>{recycledContainers.length} deleted container(s) available to restore.</p>
+                  <button type="button" className="home-secondary-button" onClick={onRefreshRecycleBin} disabled={recycledContainersLoading}>
+                    Refresh
+                  </button>
+                </div>
+                <div className="agent-grid">
+                  {recycledContainers.map((container) => (
+                    <article className="agent-card" key={container.id}>
+                      <div className="agent-card-heading">
+                        <h3>{container.container_name}</h3>
+                        <span className="agent-status down">Deleted</span>
+                      </div>
+                      <dl>
+                        <div>
+                          <dt>Deleted from</dt>
+                          <dd>{container.source_label || container.agent_name || 'Application server'}</dd>
+                        </div>
+                        <div>
+                          <dt>Agent IP</dt>
+                          <dd>{container.agent_server_ip || 'Local server'}</dd>
+                        </div>
+                        <div>
+                          <dt>Image</dt>
+                          <dd>{container.image || 'Unknown'}</dd>
+                        </div>
+                        <div>
+                          <dt>Deleted at</dt>
+                          <dd>{container.created_at ? new Date(container.created_at).toLocaleString() : 'Unknown'}</dd>
+                        </div>
+                      </dl>
+                      <div className="agent-card-actions">
+                        <button
+                          type="button"
+                          className="home-primary-button"
+                          onClick={() => onOpenRestoreContainer(container)}
+                          disabled={!canCreateContainer || restoreContainerLoading}
+                        >
+                          Restore
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="resource-empty-state">No deleted containers in the recycle bin.</p>
+            )
+          ) : selectedTargetServerDown ? null : containersLoading ? (
             <p className="resource-empty-state">Loading containers...</p>
           ) : displayedContainers.length > 0 ? (
             <div>
@@ -4224,6 +4437,57 @@ function CreateContainerPanel({
           ) : (
             <p className="resource-empty-state">{containerTab === 'stopped' ? 'No stopped containers found.' : 'No running containers found.'}</p>
           )}
+        </div>
+      )}
+
+      {restoreContainerTarget && (
+        <div className="output-modal-backdrop" role="presentation">
+          <div className="resource-delete-modal" role="dialog" aria-modal="true" aria-labelledby="container-restore-title">
+            <h3 id="container-restore-title">Restoring {restoreContainerTarget.container_name}</h3>
+            <p>
+              This container was deleted from {restoreContainerTarget.source_label || restoreContainerTarget.agent_name || 'Application server'}.
+              Please select the same agent server before confirming restore.
+            </p>
+            <label>
+              <span>Select restore agent</span>
+              <select
+                value={restoreContainerServerId || LOCAL_SERVER_ID}
+                onChange={(event) => onRestoreContainerServerIdChange(event.target.value === LOCAL_SERVER_ID ? '' : event.target.value)}
+                disabled={restoreContainerLoading}
+              >
+                <option value={LOCAL_SERVER_ID}>This application server (default)</option>
+                {serverOptions
+                  .filter((agent) => agent.id !== LOCAL_SERVER_ID)
+                  .map((agent) => (
+                    <option value={agent.id} key={agent.id}>
+                      {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                    </option>
+                  ))}
+              </select>
+            </label>
+            {restoreContainerMessage && <p className="container-message">{restoreContainerMessage}</p>}
+            <div className="resource-modal-actions">
+              <button
+                type="button"
+                className="home-primary-button"
+                onClick={onConfirmRestoreContainer}
+                disabled={
+                  restoreContainerLoading ||
+                  String(restoreContainerServerId || LOCAL_SERVER_ID) !== String(restoreContainerTarget.agent_id || LOCAL_SERVER_ID)
+                }
+              >
+                {restoreContainerLoading ? 'Restoring...' : 'Confirm'}
+              </button>
+              <button
+                type="button"
+                className="home-secondary-button"
+                onClick={onCancelRestoreContainer}
+                disabled={restoreContainerLoading}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -6443,16 +6707,7 @@ function AgentPanel({
   mode,
   agentName,
   agentServerIp,
-  agentInstallMode,
-  agentSshUsername,
-  agentSshPort,
-  agentSshAuthType,
   agentPort,
-  agentPassword,
-  agentPasswordVisible,
-  agentSshPrivateKey,
-  agentSshKeyPassphrase,
-  agentSshKeyPassphraseVisible,
   agentTab,
   agentLoading,
   agentDeleteLoading,
@@ -6469,16 +6724,7 @@ function AgentPanel({
   selectedAgentId,
   onAgentNameChange,
   onAgentServerIpChange,
-  onAgentInstallModeChange,
-  onAgentSshUsernameChange,
-  onAgentSshPortChange,
-  onAgentSshAuthTypeChange,
   onAgentPortChange,
-  onAgentPasswordChange,
-  onAgentPasswordVisibleChange,
-  onAgentSshPrivateKeyChange,
-  onAgentSshKeyPassphraseChange,
-  onAgentSshKeyPassphraseVisibleChange,
   onAgentTabChange,
   onSelectedAgentChange,
   onCreateAgent,
@@ -6492,14 +6738,14 @@ function AgentPanel({
   onOutputModalDragStart,
 }) {
   const deletableAgents = agents.filter((agent) => agent.id !== 'local');
-  const usesManualInstall = agentInstallMode === 'manual';
-  const usesSshKey = !usesManualInstall && agentSshAuthType === 'key';
-  const agentCredentialMissing = usesManualInstall ? false : (usesSshKey ? !agentSshPrivateKey.trim() : !agentPassword.trim());
   const [agentOutputCopyMessage, setAgentOutputCopyMessage] = useState('');
 
   const getAgentSetupCommandText = (value) => {
     const lines = String(value || '').replace(/\r\n/g, '\n').split('\n');
-    const startIndex = lines.findIndex((line) => line.trim().startsWith('AGENT_PORT='));
+    const startIndex = lines.findIndex((line) => {
+      const trimmed = line.trim();
+      return trimmed.startsWith('docker pull ') || trimmed.startsWith('docker rm ') || trimmed.startsWith('docker run ');
+    });
     if (startIndex === -1) {
       return String(value || '').trim();
     }
@@ -6507,7 +6753,7 @@ function AgentPanel({
     let endIndex = lines.length;
     for (let index = startIndex + 1; index < lines.length; index += 1) {
       const line = lines[index].trim();
-      if (line.startsWith('The agent command endpoint will bind to ') || line.startsWith('For a different server, ') || line.startsWith('After the container starts, ')) {
+      if (line.startsWith('After the container starts, ')) {
         endIndex = index;
         break;
       }
@@ -6542,68 +6788,13 @@ function AgentPanel({
     }
   };
 
-  const handleServerAddressInput = (value) => {
-    const rawValue = value.trim();
-    let targetValue = rawValue;
-    let parsedPort = '';
 
-    if (rawValue.startsWith('ssh ')) {
-      const parts = rawValue.split(/\s+/);
-      targetValue = '';
-
-      for (let index = 1; index < parts.length; index += 1) {
-        const part = parts[index];
-
-        if (part === '-p' && parts[index + 1]) {
-          parsedPort = parts[index + 1];
-          index += 1;
-          continue;
-        }
-
-        if (part.startsWith('-')) {
-          continue;
-        }
-
-        targetValue = part;
-        break;
-      }
-    }
-
-    const atIndex = targetValue.indexOf('@');
-
-    if (atIndex > 0) {
-      const pastedUsername = targetValue.slice(0, atIndex).trim();
-      let pastedHost = targetValue.slice(atIndex + 1).trim();
-      const portMatch = pastedHost.match(/^([^:]+):(\d+)$/);
-
-      if (portMatch) {
-        pastedHost = portMatch[1];
-        parsedPort = parsedPort || portMatch[2];
-      }
-
-      if (parsedPort) {
-        onAgentSshPortChange(parsedPort);
-      }
-
-      if (pastedUsername) {
-        onAgentSshUsernameChange(pastedUsername);
-      }
-      onAgentServerIpChange(pastedHost);
-      return;
-    }
-
-    if (parsedPort) {
-      onAgentSshPortChange(parsedPort);
-    }
-
-    onAgentServerIpChange(targetValue || value);
-  };
 
   return (
     <section className="home-panel agent-panel">
       <PanelIntro
         title={mode === 'create' ? 'Add Server Agent' : 'Connected Servers'}
-        description={mode === 'create' ? 'Register another Docker host with manual install steps or automatic SSH setup.' : 'Monitor every server that can be managed from this console.'}
+        description={mode === 'create' ? 'Register another Docker host with a privileged Docker agent command.' : 'Monitor every server that can be managed from this console.'}
       />
 
       {mode === 'create' ? (
@@ -6653,23 +6844,11 @@ function AgentPanel({
                     type="text"
                     name="agent-server-ip"
                     value={agentServerIp}
-                    onChange={(event) => handleServerAddressInput(event.target.value)}
-                    placeholder="example: 192.168.1.10 or ubuntu@192.168.1.10"
+                    onChange={(event) => onAgentServerIpChange(event.target.value)}
+                    placeholder="example: 192.168.1.10"
                     autoComplete="off"
                     disabled={agentLoading}
                   />
-                </label>
-                <label>
-                  <span>Install method</span>
-                  <select
-                    value={agentInstallMode}
-                    onChange={(event) => onAgentInstallModeChange(event.target.value)}
-                    disabled={agentLoading}
-                  >
-                    <option value="manual">Manual Docker install</option>
-                    <option value="ssh">Automatic SSH install</option>
-                  </select>
-                  <small className="field-help">Manual install gives copyable commands that pull the agent image from this application's registry.</small>
                 </label>
                 <label>
                   <span>Agent service port</span>
@@ -6684,147 +6863,6 @@ function AgentPanel({
                     disabled={agentLoading}
                   />
                 </label>
-                {!usesManualInstall && (
-                  <>
-                <label>
-                  <span>SSH username</span>
-                  <input
-                    type="text"
-                    name="agent-ssh-user"
-                    value={agentSshUsername}
-                    onChange={(event) => onAgentSshUsernameChange(event.target.value)}
-                    placeholder="optional: ubuntu"
-                    autoComplete="off"
-                    disabled={agentLoading}
-                  />
-                  <small className="field-help">Optional for password setup. Leave blank to try common usernames automatically, or enter the exact SSH user if you know it.</small>
-                </label>
-                <label>
-                  <span>SSH port</span>
-                  <input
-                    type="number"
-                    name="agent-ssh-port"
-                    min="1"
-                    max="65535"
-                    value={agentSshPort}
-                    onChange={(event) => onAgentSshPortChange(event.target.value)}
-                    autoComplete="off"
-                    disabled={agentLoading}
-                  />
-                </label>
-                <label>
-                  <span>SSH authentication</span>
-                  <select
-                    value={agentSshAuthType}
-                    onChange={(event) => onAgentSshAuthTypeChange(event.target.value)}
-                    disabled={agentLoading}
-                  >
-                    <option value="password">Password</option>
-                    <option value="key">SSH private key</option>
-                  </select>
-                  <small className="field-help">Password setup automatically installs a controller recovery key for future redeploy. Use SSH private key only when one already exists.</small>
-                </label>
-                  </>
-                )}
-                {!usesManualInstall && (usesSshKey ? (
-                  <>
-                    <label className="agent-key-field">
-                      <span>SSH private key</span>
-                      <textarea
-                        name="agent-ssh-private-key"
-                        value={agentSshPrivateKey}
-                        onChange={(event) => onAgentSshPrivateKeyChange(event.target.value)}
-                        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                        autoComplete="off"
-                        autoCorrect="off"
-                        autoCapitalize="none"
-                        spellCheck="false"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                        disabled={agentLoading}
-                        rows={7}
-                      />
-                      <small className="field-help">The key is used for automatic install and redeploy. The target user should have passwordless sudo for package or Docker setup.</small>
-                    </label>
-                    <label>
-                      <span>Key passphrase</span>
-                      <div className="password-field">
-                        <input
-                          type={agentSshKeyPassphraseVisible ? 'text' : 'password'}
-                          name="agent-ssh-key-passphrase"
-                          value={agentSshKeyPassphrase}
-                          onChange={(event) => onAgentSshKeyPassphraseChange(event.target.value)}
-                          autoComplete="new-password"
-                          disabled={agentLoading}
-                          placeholder="optional"
-                        />
-                        <button
-                          type="button"
-                          className="password-eye-button"
-                          onClick={() => onAgentSshKeyPassphraseVisibleChange((visible) => !visible)}
-                          disabled={agentLoading}
-                          aria-label={agentSshKeyPassphraseVisible ? 'Hide passphrase' : 'Show passphrase'}
-                        >
-                          {agentSshKeyPassphraseVisible ? (
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M3 3l18 18" />
-                              <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
-                              <path d="M9.9 4.2A9.8 9.8 0 0 1 12 4c5.5 0 9 5 9 8a8.6 8.6 0 0 1-2.1 3.9" />
-                              <path d="M6.1 6.1C4.2 7.4 3 9.6 3 12c0 3 3.5 8 9 8 1.4 0 2.6-.3 3.8-.8" />
-                            </svg>
-                          ) : (
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M3 12s3.5-8 9-8 9 8 9 8-3.5 8-9 8-9-8-9-8z" />
-                              <circle cx="12" cy="12" r="3" />
-                            </svg>
-                          )}
-                        </button>
-                      </div>
-                    </label>
-                  </>
-                ) : (
-                  <label>
-                    <span>SSH password</span>
-                    <div className="password-field">
-                      <input
-                        type={agentPasswordVisible ? 'text' : 'password'}
-                        name="agent-server-token"
-                        value={agentPassword}
-                        onChange={(event) => onAgentPasswordChange(event.target.value)}
-                        autoComplete="new-password"
-                        autoCorrect="off"
-                        autoCapitalize="none"
-                        spellCheck="false"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                        data-form-type="other"
-                        disabled={agentLoading}
-                      />
-                      <button
-                        type="button"
-                        className="password-eye-button"
-                        onClick={() => onAgentPasswordVisibleChange((visible) => !visible)}
-                        disabled={agentLoading}
-                        aria-label={agentPasswordVisible ? 'Hide password' : 'Show password'}
-                      >
-                        {agentPasswordVisible ? (
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M3 3l18 18" />
-                            <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
-                            <path d="M9.9 4.2A9.8 9.8 0 0 1 12 4c5.5 0 9 5 9 8a8.6 8.6 0 0 1-2.1 3.9" />
-                            <path d="M6.1 6.1C4.2 7.4 3 9.6 3 12c0 3 3.5 8 9 8 1.4 0 2.6-.3 3.8-.8" />
-                          </svg>
-                        ) : (
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M3 12s3.5-8 9-8 9 8 9 8-3.5 8-9 8-9-8-9-8z" />
-                            <circle cx="12" cy="12" r="3" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <small className="field-help">Used once for setup. After install, redeploy uses the controller recovery key created automatically.</small>
-                  </label>
-                ))}
               </div>
 
               {agentMessage && <p className="container-message">{agentMessage}</p>}
@@ -6833,9 +6871,9 @@ function AgentPanel({
                 <button
                   type="submit"
                   className="home-primary-button"
-                  disabled={agentLoading || !agentName.trim() || !agentServerIp.trim() || (!usesManualInstall && ((usesSshKey && !agentSshUsername.trim()) || agentCredentialMissing))}
+                  disabled={agentLoading || !agentName.trim() || !agentServerIp.trim()}
                 >
-                  {agentLoading ? (usesManualInstall ? 'Creating steps...' : 'Creating agent...') : (usesManualInstall ? 'Create install steps' : 'Add server agent')}
+                  {agentLoading ? 'Creating command...' : 'Create agent'}
                 </button>
                 <button
                   type="button"
@@ -7241,6 +7279,8 @@ function RbacPanel({
 }
 
 function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
+  const onBackToDashboard = useContext(DashboardBackContext);
+
   if (loading) {
     return (
       <section className="home-panel">
@@ -7279,9 +7319,16 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
           <h2>Server Health</h2>
           <p>Updated every 1 minute. Last checked at {serverInfo.checked_at}</p>
         </div>
-        <button type="button" className="home-primary-button" onClick={onRefresh}>
-          Refresh
-        </button>
+        <div className="server-info-actions">
+          <button type="button" className="home-primary-button" onClick={onRefresh}>
+            Refresh
+          </button>
+          {onBackToDashboard ? (
+            <button type="button" className="home-secondary-button dashboard-back-button" onClick={onBackToDashboard}>
+              Back to Dashboard
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="server-info-grid">

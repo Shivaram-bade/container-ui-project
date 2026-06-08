@@ -35,12 +35,12 @@ from urllib import request as urllib_request
 from urllib.parse import urlparse
 
 from .models import (
-    Agent, AgentCommand, Deployment, DeploymentJob, RBACGroup, RegistryImage,
+    Agent, AgentCommand, Deployment, DeploymentJob, RBACGroup, RecycledContainer, RegistryImage,
     UserProfile, LoginHistory
 )
 from .serializers import (
     RegisterSerializer, LoginSerializer, UserSerializer,
-    LoginHistorySerializer, AgentSerializer, DeploymentJobSerializer, RegistryImageSerializer
+    LoginHistorySerializer, AgentSerializer, DeploymentJobSerializer, RecycledContainerSerializer, RegistryImageSerializer
 )
 from .deployment_service import create_deployment_job, mark_deployment_job_complete, mark_deployment_job_running
 from .registry_service import (
@@ -173,7 +173,8 @@ DOCKER_BUILDX_CONFIG = Path('/tmp/vitel-docker-buildx')
 AGENT_DOCKER_NETWORK = 'agent_nt'
 AGENT_DOCKER_VOLUME = 'agent_vol'
 LOCAL_AGENT_IMAGE = 'agent:latest'
-REMOTE_AGENT_CONTAINER_NAME = 'vitel-agent'
+REMOTE_AGENT_CONTAINER_NAME = os.getenv('VITEL_AGENT_CONTAINER_NAME', 'docker-control-agent')
+LEGACY_REMOTE_AGENT_CONTAINER_NAME = 'vitel-agent'
 REMOTE_AGENT_IMAGE = os.getenv('VITEL_AGENT_IMAGE', 'yourrepo/vitel-agent:latest')
 AGENT_IMAGE_SOURCE = os.getenv('VITEL_AGENT_SOURCE_IMAGE', 'container-ui-project-backend:latest')
 AGENT_IMAGE_SOURCE_CANDIDATES = tuple(dict.fromkeys(filter(None, [
@@ -426,6 +427,33 @@ def get_controller_base_url(request):
 
     return request.build_absolute_uri('/').rstrip('/')
 
+
+def get_agent_control_server_url(request):
+    configured_url = (
+        os.getenv('CONTROL_SERVER_URL', '').strip()
+        or os.getenv('VITEL_CONTROL_SERVER_URL', '').strip()
+    )
+    if configured_url:
+        return configured_url.rstrip('/')
+
+    return get_controller_base_url(request).rstrip('/')
+
+
+def get_agent_control_server_ws_url(request):
+    configured_url = (
+        os.getenv('CONTROL_SERVER_WS_URL', '').strip()
+        or os.getenv('VITEL_CONTROL_SERVER_WS_URL', '').strip()
+    )
+    if configured_url:
+        return configured_url.rstrip('/')
+
+    control_url = get_agent_control_server_url(request)
+    parsed = urlparse(control_url)
+    scheme = 'wss' if parsed.scheme == 'https' else 'ws'
+    netloc = parsed.netloc or parsed.path
+    path = parsed.path if parsed.netloc else ''
+    base = f'{scheme}://{netloc}{path}'.rstrip('/')
+    return f'{base}/agents'
 
 
 def build_agent_commands(agent, password, request):
@@ -2164,48 +2192,76 @@ def get_manual_agent_bind_host(request, agent):
     return str(agent.server_ip or '').strip() or '127.0.0.1'
 
 
+def build_shell_single_quoted(value):
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def build_docker_agent_token(agent):
+    now = datetime.utcnow()
+    environment_id = f'{agent.owner_id}-{agent.id}'
+    payload = {
+        'sub': f'agent:{environment_id}',
+        'environmentId': environment_id,
+        'scope': 'docker-agent',
+        'jti': str(uuid.uuid4()),
+        'iat': now,
+        'exp': now + timedelta(days=30),
+        'aud': 'docker-agent',
+        'iss': 'docker-control',
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
+
+
 def build_manual_agent_install_command(agent, password, request):
-    script = build_agent_script(agent, password, request, reported_ip=str(agent.server_ip))
-    script_b64 = base64.b64encode(script.encode('utf-8')).decode('ascii')
     port = int(agent.port)
-    bind_host = get_manual_agent_bind_host(request, agent)
     container_name = REMOTE_AGENT_CONTAINER_NAME
     pull_reference = get_agent_registry_pull_reference(request)
+    control_url = get_agent_control_server_url(request)
+    control_ws_url = get_agent_control_server_ws_url(request)
+    agent_token = password or build_docker_agent_token(agent)
     return "\n".join([
-        f'AGENT_PORT={port}',
-        'AGENT_BIND_HOST=' + shlex.quote(bind_host),
-        'AGENT_CONTAINER=' + shlex.quote(container_name),
-        'AGENT_IMAGE=' + shlex.quote(pull_reference),
-        'docker pull "$AGENT_IMAGE"',
-        'docker rm -f "$AGENT_CONTAINER" >/dev/null 2>&1 || true',
+        'docker pull ' + shlex.quote(pull_reference),
+        'docker rm -f ' + shlex.quote(container_name) + ' >/dev/null 2>&1 || true',
         'docker run -d \\',
-        '  --name "$AGENT_CONTAINER" \\',
+        '  --name ' + shlex.quote(container_name) + ' \\',
         '  --restart unless-stopped \\',
-        '  -p "$AGENT_BIND_HOST:$AGENT_PORT:$AGENT_PORT" \\',
+        '  --privileged \\',
+        '  --pid host \\',
+        '  --network host \\',
         '  -v /var/run/docker.sock:/var/run/docker.sock \\',
-        '  -e VITEL_AGENT_SCRIPT_B64=' + shlex.quote(script_b64) + ' \\',
-        "  \"$AGENT_IMAGE\" sh -lc 'mkdir -p /tmp/vitel-agent && printf \"%s\" \"$VITEL_AGENT_SCRIPT_B64\" | base64 -d > /tmp/vitel-agent/vitel-agent.sh && chmod +x /tmp/vitel-agent/vitel-agent.sh && exec sh /tmp/vitel-agent/vitel-agent.sh'",
+        '  -v /:/hostfs \\',
+        '  -v /proc:/hostproc:ro \\',
+        '  -e AGENT_RUN_AS_ROOT=true \\',
+        '  -e AGENT_HOST_FS_ROOT=/hostfs \\',
+        '  -e AGENT_APPLICATION_FILESYSTEM_ALLOWED_ROOTS=/ \\',
+        '  -e AGENT_HOST_PROC_ROOT=/hostproc \\',
+        f'  -e AGENT_PORT={port} \\',
+        '  -e CONTROL_SERVER_URL=' + build_shell_single_quoted(control_url) + ' \\',
+        '  -e CONTROL_SERVER_WS_URL=' + build_shell_single_quoted(control_ws_url) + ' \\',
+        '  -e AGENT_TOKEN=' + build_shell_single_quoted(agent_token) + ' \\',
+        '  -e AGENT_ID=' + build_shell_single_quoted(agent.name) + ' \\',
+        '  ' + shlex.quote(pull_reference),
     ])
 
 def build_manual_agent_install_output(agent, password, request):
-    bind_host = get_manual_agent_bind_host(request, agent)
     return "\n".join([
         f'Agent record created for {agent.name} ({agent.server_ip}:{agent.port}).',
         'Run these commands on the target server to pull the agent image from this controller registry and start it:',
         '',
         build_manual_agent_install_command(agent, password, request),
         '',
-        f'The agent command endpoint will bind to {bind_host}:{agent.port}.',
-        'For a different server, make sure this controller can reach that address and port.',
+        f'The agent container uses host networking and AGENT_PORT={agent.port}.',
+        'Make sure the control server URLs in the command are reachable from the target server.',
         'After the container starts, it will heartbeat back to this controller, poll deployment jobs every 30 seconds, and appear as connected.',
     ])
 
 
 def build_manual_agent_cleanup_command():
+    repository = shlex.quote(get_agent_registry_repository())
     return "\n".join([
-        'docker rm -f ' + shlex.quote(REMOTE_AGENT_CONTAINER_NAME) + ' >/dev/null 2>&1 || true',
-        'docker image rm -f ' + shlex.quote(LOCAL_AGENT_IMAGE) + ' >/dev/null 2>&1 || true',
-        'docker image rm -f ' + shlex.quote(get_agent_registry_repository()) + ' >/dev/null 2>&1 || true',
+        'docker rm -f ' + shlex.quote(REMOTE_AGENT_CONTAINER_NAME) + ' ' + shlex.quote(LEGACY_REMOTE_AGENT_CONTAINER_NAME) + ' >/dev/null 2>&1 || true',
+        'docker image rm -f ' + shlex.quote(LOCAL_AGENT_IMAGE) + ' ' + repository + ' >/dev/null 2>&1 || true',
+        "for AGENT_IMAGE in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep '/" + get_agent_registry_repository() + ":" + get_agent_registry_tag() + "$' || true); do docker image rm -f \"$AGENT_IMAGE\" >/dev/null 2>&1 || true; done",
     ])
 
 
@@ -2213,7 +2269,7 @@ def build_manual_agent_cleanup_output(result=None):
     previous_output = (result or {}).get('output', '')
     return "\n".join([
         previous_output,
-        'Manual agent cleanup could not be completed from the controller. Run these commands on the target server to remove agent resources:',
+        'Agent record removed from this app. Run these commands on the target server to remove agent resources:',
         '',
         build_manual_agent_cleanup_command(),
     ]).strip()
@@ -3512,18 +3568,18 @@ def agents(request):
         agent_data = AgentSerializer(agent).data
         remote_cleanup_skipped = False
         if get_agent_ssh_auth_type(agent) == 'manual':
-            result = run_agent_command(
-                agent,
-                agent_secret,
-                'docker image rm -f agent:latest >/dev/null 2>&1 || true; docker rm -f vitel-agent >/dev/null 2>&1 || true',
-                timeout=15,
-            )
-            if not result.get('success'):
+            if should_manage_agent_locally(request, agent):
+                result = run_local_shell_command(
+                    build_manual_agent_cleanup_command(),
+                    password=agent_secret,
+                    timeout=60,
+                )
+            else:
                 remote_cleanup_skipped = True
                 result = {
                     'success': True,
                     'command': 'manual agent cleanup',
-                    'output': build_manual_agent_cleanup_output(result),
+                    'output': build_manual_agent_cleanup_output(),
                 }
         elif should_manage_agent_locally(request, agent):
             result = run_local_shell_command(
@@ -3578,149 +3634,60 @@ def agents(request):
 
     name = request.data.get('name', '').strip()
     server_ip = request.data.get('server_ip', '').strip()
-    install_method = str(request.data.get('install_method', 'ssh') or 'ssh').strip().lower()
-    manual_install = install_method in {'manual', 'self-register', 'self_register', 'docker'}
-    ssh_auth_type = str(request.data.get('ssh_auth_type', 'password') or 'password').strip().lower()
-    if manual_install:
-        ssh_auth_type = 'manual'
-    elif ssh_auth_type not in {'password', 'key'}:
-        ssh_auth_type = 'password'
-    supplied_password = decode_agent_password(
-        request.data.get('password', '').strip(),
-        request.data.get('password_encoding', '').strip(),
-    )
-    ssh_private_key = normalize_private_key(decode_agent_password(
-        request.data.get('ssh_private_key', '').strip(),
-        request.data.get('ssh_private_key_encoding', '').strip(),
-    ))
-    ssh_key_passphrase = decode_agent_password(
-        request.data.get('ssh_key_passphrase', '').strip(),
-        request.data.get('ssh_key_passphrase_encoding', '').strip(),
-    )
-    agent_secret = supplied_password if ssh_auth_type == 'password' else uuid.uuid4().hex + uuid.uuid4().hex
-    generated_private_key = ''
-    generated_public_key = ''
-    generated_key_error = ''
-    server_ip, ssh_username, ssh_port_value = parse_ssh_target(
-        server_ip,
-        request.data.get('ssh_username', ''),
-        request.data.get('ssh_port', ''),
-    )
     try:
         port = int(request.data.get('port') or 19541)
     except (TypeError, ValueError):
         port = 19541
-    try:
-        ssh_port = int(ssh_port_value or 22)
-    except (TypeError, ValueError):
-        ssh_port = 22
-    local_install = truthy_request_value(request.data.get('local_install')) and is_local_agent_target(request, server_ip)
-    if ssh_auth_type == 'password' and not local_install:
-        generated_private_key, generated_public_key, generated_key_error = generate_controller_ssh_key_pair()
 
     if not name or not server_ip:
         return Response({
             'error': 'Agent name and server IP are required.',
         }, status=status.HTTP_400_BAD_REQUEST)
-    if ssh_auth_type == 'key' and not ssh_username:
-        return Response({
-            'error': 'SSH username is required when using SSH private key authentication.',
-        }, status=status.HTTP_400_BAD_REQUEST)
-    if ssh_auth_type == 'password' and not ssh_username:
-        ssh_username = 'root'
-    if ssh_auth_type == 'password' and not supplied_password:
-        return Response({
-            'error': 'SSH password is required for password authentication.',
-        }, status=status.HTTP_400_BAD_REQUEST)
-    if ssh_auth_type == 'password' and not local_install and not generated_private_key:
-        return Response({
-            'error': f'Unable to generate controller SSH recovery key: {generated_key_error or "unknown error"}',
-        }, status=status.HTTP_400_BAD_REQUEST)
-    if ssh_auth_type == 'key' and not ssh_private_key:
-        return Response({
-            'error': 'A valid SSH private key is required for SSH key authentication.',
-        }, status=status.HTTP_400_BAD_REQUEST)
     if port < 1 or port > 65535:
         return Response({
             'error': 'Agent port must be between 1 and 65535.',
         }, status=status.HTTP_400_BAD_REQUEST)
-    if ssh_port < 1 or ssh_port > 65535:
-        return Response({
-            'error': 'SSH port must be between 1 and 65535.',
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    if manual_install:
-        agent_secret = uuid.uuid4().hex + uuid.uuid4().hex
-        agent, created = Agent.objects.update_or_create(
-            owner=request.user,
-            name=name,
-            defaults={
-                'server_ip': server_ip,
-                'ssh_username': ssh_username or 'manual',
-                'ssh_port': ssh_port,
-                'ssh_auth_type': 'manual',
-                'ssh_key_secret': '',
-                'ssh_key_passphrase_secret': '',
-                'port': port,
-                'password_hash': make_password(agent_secret),
-                'password_secret': encode_agent_secret(agent_secret),
-                'connected': False,
-                'hostname': '',
-            },
-        )
-        image_result = ensure_agent_image_in_registry(request)
-        if not image_result.get('success'):
-            agent.delete()
-            return Response({
-                **image_result,
-                'success': False,
-                'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
-            }, status=status.HTTP_400_BAD_REQUEST)
-        output = '\n'.join([image_result.get('output', ''), build_manual_agent_install_output(agent, agent_secret, request)]).strip()
-        return Response({
-            'success': True,
-            'created': created,
-            'manual_install': True,
-            'agent': AgentSerializer(agent).data,
-            'command': 'manual docker agent install',
-            'output': output,
-            'local_install': False,
-        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     existing_agent = Agent.objects.filter(owner=request.user, name=name).first()
     previous_agent_values = None
     if existing_agent:
         previous_agent_values = {
             'server_ip': existing_agent.server_ip,
-            'ssh_username': get_agent_ssh_username(existing_agent),
-            'ssh_port': get_agent_ssh_port(existing_agent),
+            'ssh_username': existing_agent.ssh_username,
+            'ssh_port': existing_agent.ssh_port,
+            'ssh_auth_type': existing_agent.ssh_auth_type,
+            'ssh_key_secret': existing_agent.ssh_key_secret,
+            'ssh_key_passphrase_secret': existing_agent.ssh_key_passphrase_secret,
             'port': existing_agent.port,
             'password_hash': existing_agent.password_hash,
-            'password_secret': getattr(existing_agent, 'password_secret', ''),
-            'ssh_auth_type': get_agent_ssh_auth_type(existing_agent),
-            'ssh_key_secret': getattr(existing_agent, 'ssh_key_secret', ''),
-            'ssh_key_passphrase_secret': getattr(existing_agent, 'ssh_key_passphrase_secret', ''),
+            'password_secret': existing_agent.password_secret,
             'connected': existing_agent.connected,
             'hostname': existing_agent.hostname,
         }
 
+    temporary_secret = uuid.uuid4().hex + uuid.uuid4().hex
     agent, created = Agent.objects.update_or_create(
         owner=request.user,
         name=name,
         defaults={
             'server_ip': server_ip,
-            'ssh_username': ssh_username,
-            'ssh_port': ssh_port,
-            'ssh_auth_type': ssh_auth_type,
-            'ssh_key_secret': encode_agent_secret(ssh_private_key) if ssh_auth_type == 'key' else '',
-            'ssh_key_passphrase_secret': encode_agent_secret(ssh_key_passphrase) if ssh_auth_type == 'key' and ssh_key_passphrase else '',
+            'ssh_username': 'manual',
+            'ssh_port': 22,
+            'ssh_auth_type': 'manual',
+            'ssh_key_secret': '',
+            'ssh_key_passphrase_secret': '',
             'port': port,
-            'password_hash': make_password(agent_secret),
-            'password_secret': encode_agent_secret(agent_secret),
+            'password_hash': make_password(temporary_secret),
+            'password_secret': encode_agent_secret(temporary_secret),
             'connected': False,
             'hostname': '',
         },
     )
+    agent_secret = build_docker_agent_token(agent)
+    agent.password_hash = make_password(agent_secret)
+    agent.password_secret = encode_agent_secret(agent_secret)
+    agent.save(update_fields=['password_hash', 'password_secret', 'updated_at'])
+
     image_result = ensure_agent_image_in_registry(request)
     if not image_result.get('success'):
         if created:
@@ -3732,52 +3699,21 @@ def agents(request):
         return Response({
             **image_result,
             'success': False,
-            'created': created,
-            'agent': AgentSerializer(agent).data,
             'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    result, local_install = install_agent_on_target(
-        request,
-        agent,
-        agent_secret,
-        created=created,
-        ssh_private_key=ssh_private_key if ssh_auth_type == 'key' else '',
-        ssh_key_passphrase=ssh_key_passphrase if ssh_auth_type == 'key' else '',
-        controller_public_key=generated_public_key if ssh_auth_type == 'password' else '',
-    )
-    if not result['success']:
-        if created:
-            agent.delete()
-        elif previous_agent_values:
-            for field, value in previous_agent_values.items():
-                setattr(agent, field, value)
-            agent.save(update_fields=[*previous_agent_values.keys(), 'updated_at'])
-        return Response({
-            **result,
-            'success': False,
-            'created': created,
-            'agent': AgentSerializer(agent).data,
-            'error': result.get('error') or 'Unable to create the agent on the selected server.',
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    if ssh_auth_type == 'password' and generated_private_key:
-        agent.ssh_auth_type = 'key'
-        agent.ssh_key_secret = encode_agent_secret(generated_private_key)
-        agent.ssh_key_passphrase_secret = ''
-        agent.save(update_fields=['ssh_auth_type', 'ssh_key_secret', 'ssh_key_passphrase_secret', 'updated_at'])
-        result['output'] = '\n'.join([
-            result.get('output', ''),
-            'Controller SSH recovery key installed. Future redeploy uses SSH key authentication.',
-        ]).strip()
-
+    output = '\n'.join([
+        image_result.get('output', ''),
+        build_manual_agent_install_output(agent, agent_secret, request),
+    ]).strip()
     return Response({
         'success': True,
         'created': created,
+        'manual_install': True,
         'agent': AgentSerializer(agent).data,
-        'command': result['command'],
-        'output': result['output'] or f'Agent {agent.name} created.',
-        'local_install': local_install,
+        'command': 'docker control agent install',
+        'output': output,
+        'local_install': False,
     }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
@@ -4238,6 +4174,153 @@ def container_detail(request):
     }, status=status.HTTP_200_OK)
 
 
+def normalize_container_inspect_name(container_data, fallback='container'):
+    name = str(container_data.get('Name') or fallback or 'container').strip().lstrip('/')
+    name = re.sub(r'[^a-zA-Z0-9_.-]+', '-', name).strip('-_.')
+    return name[:120] or f'container-{uuid.uuid4().hex[:8]}'
+
+
+def get_recycle_source_fields(agent):
+    if agent:
+        return {
+            'agent_name': agent.name or '',
+            'agent_server_ip': str(agent.server_ip or ''),
+        }
+    return {
+        'agent_name': 'Application server',
+        'agent_server_ip': '',
+    }
+
+
+def create_recycled_container_record(request, agent, container_id, container_data):
+    container_name = normalize_container_inspect_name(container_data, container_id)
+    config = container_data.get('Config') or {}
+    return RecycledContainer.objects.create(
+        owner=request.user,
+        agent=agent,
+        target_server_id=str(agent.id) if agent else 'local',
+        container_id=str(container_data.get('Id') or container_id),
+        container_name=container_name,
+        image=str(config.get('Image') or container_data.get('Image') or ''),
+        status=str(container_data.get('State', {}).get('Status') or container_data.get('State', {}).get('Running') or ''),
+        inspect_data=container_data,
+        **get_recycle_source_fields(agent),
+    )
+
+
+def append_recycled_port_args(command, inspect_data):
+    port_bindings = (inspect_data.get('HostConfig') or {}).get('PortBindings') or {}
+    for container_port, bindings in port_bindings.items():
+        private_port, _, protocol = str(container_port).partition('/')
+        protocol = protocol or 'tcp'
+        for binding in bindings or []:
+            host_port = str(binding.get('HostPort') or '').strip()
+            host_ip = str(binding.get('HostIp') or '').strip()
+            if not host_port or not private_port:
+                continue
+            if host_ip and host_ip not in {'0.0.0.0', '::'}:
+                command.extend(['-p', f'{host_ip}:{host_port}:{private_port}/{protocol}'])
+            else:
+                command.extend(['-p', f'{host_port}:{private_port}/{protocol}'])
+
+
+def append_recycled_volume_args(command, inspect_data):
+    binds = (inspect_data.get('HostConfig') or {}).get('Binds') or []
+    seen_targets = set()
+    for bind in binds:
+        bind_text = str(bind or '').strip()
+        if not bind_text:
+            continue
+        parts = bind_text.split(':')
+        if len(parts) >= 2:
+            seen_targets.add(parts[1])
+        command.extend(['-v', bind_text])
+
+    for mount in inspect_data.get('Mounts') or []:
+        target = str(mount.get('Destination') or '').strip()
+        if not target or target in seen_targets:
+            continue
+        source = str(mount.get('Name') or mount.get('Source') or '').strip()
+        if not source:
+            continue
+        mount_arg = f'{source}:{target}'
+        if mount.get('RW') is False:
+            mount_arg += ':ro'
+        command.extend(['-v', mount_arg])
+        seen_targets.add(target)
+
+
+def get_recycled_network_names(inspect_data):
+    networks = list(((inspect_data.get('NetworkSettings') or {}).get('Networks') or {}).keys())
+    return [network for network in networks if network and network != 'none']
+
+
+def build_recycled_container_restore_script(record):
+    inspect_data = record.inspect_data or {}
+    config = inspect_data.get('Config') or {}
+    host_config = inspect_data.get('HostConfig') or {}
+    image = str(config.get('Image') or record.image or '').strip()
+    name = normalize_container_inspect_name(inspect_data, record.container_name)
+    if not image:
+        raise ValueError('Deleted container image is missing, so it cannot be restored.')
+
+    command = ['docker', 'run', '-d', '--name', name]
+    restart_policy = host_config.get('RestartPolicy') or {}
+    restart_name = str(restart_policy.get('Name') or '').strip()
+    restart_max = restart_policy.get('MaximumRetryCount')
+    if restart_name and restart_name != 'no':
+        restart_value = restart_name
+        if restart_name == 'on-failure' and restart_max:
+            restart_value = f'{restart_name}:{restart_max}'
+        command.extend(['--restart', restart_value])
+
+    network_mode = str(host_config.get('NetworkMode') or '').strip()
+    networks = get_recycled_network_names(inspect_data)
+    primary_network = network_mode if network_mode and not network_mode.startswith('container:') else ''
+    if primary_network in {'default'}:
+        primary_network = ''
+    if not primary_network and networks:
+        primary_network = networks[0]
+    if primary_network and primary_network != 'none':
+        command.extend(['--network', primary_network])
+
+    user = str(config.get('User') or '').strip()
+    if user:
+        command.extend(['--user', user])
+    workdir = str(config.get('WorkingDir') or '').strip()
+    if workdir:
+        command.extend(['--workdir', workdir])
+
+    for env in config.get('Env') or []:
+        env_text = str(env or '').strip()
+        if env_text:
+            command.extend(['-e', env_text])
+
+    append_recycled_port_args(command, inspect_data)
+    append_recycled_volume_args(command, inspect_data)
+
+    command.append(image)
+    for arg in config.get('Cmd') or []:
+        if str(arg).strip():
+            command.append(str(arg))
+
+    script_lines = [
+        'set -e',
+        shlex.join(['docker', 'image', 'inspect', image]) + ' >/dev/null 2>&1 || ' + shlex.join(['docker', 'pull', image]),
+        shlex.join(command),
+    ]
+    extra_networks = [network for network in networks if network != primary_network]
+    for network in extra_networks:
+        script_lines.append(shlex.join(['docker', 'network', 'connect', network, name]) + ' || true')
+    return '\n'.join(script_lines)
+
+
+def selected_server_matches_recycled_record(server_id, record):
+    normalized = str(server_id or 'local').strip() or 'local'
+    expected = str(record.target_server_id or record.agent_id or 'local')
+    return normalized == expected
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def container_action(request):
@@ -4261,9 +4344,76 @@ def container_action(request):
     if error_response:
         return error_response
 
+    recycled_record = None
+    container_data = None
+    if action == 'delete':
+        inspect_result = run_target_docker_command(agent, password, remote_agent, [
+            'docker', 'inspect', container_id,
+            '--format', '{{json .}}',
+        ], timeout=30)
+        if inspect_result['success']:
+            try:
+                container_data = json.loads(inspect_result['output'].splitlines()[0])
+            except (json.JSONDecodeError, IndexError):
+                container_data = None
+
     command = ['docker', 'rm', '-f', container_id] if action == 'delete' else ['docker', action, container_id]
     result = run_target_docker_command(agent, password, remote_agent, command)
+    if action == 'delete' and result['success'] and container_data:
+        recycled_record = create_recycled_container_record(request, agent, container_id, container_data)
+        result = {
+            **result,
+            'recycled_container': RecycledContainerSerializer(recycled_record).data,
+        }
     return Response(result, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def container_recycle_bin(request):
+    if request.method == 'GET':
+        records = RecycledContainer.objects.filter(owner=request.user, restored=False).select_related('agent')
+        return Response({
+            'success': True,
+            'containers': RecycledContainerSerializer(records, many=True).data,
+        })
+
+    if not user_has_operation(request.user, 'create_container'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+
+    record_id = request.data.get('id') or request.data.get('recycle_id')
+    try:
+        record = RecycledContainer.objects.select_related('agent').get(owner=request.user, id=record_id, restored=False)
+    except (RecycledContainer.DoesNotExist, ValueError):
+        return Response({'success': False, 'error': 'Recycle bin container was not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    selected_server_id = str(request.data.get('server_id') or 'local').strip() or 'local'
+    if not selected_server_matches_recycled_record(selected_server_id, record):
+        return Response({
+            'success': False,
+            'error': f'Please select {record.source_label}, the server this container was deleted from, before restoring.',
+            'expected_server_id': record.target_server_id or record.agent_id or 'local',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    agent, password, remote_agent, error_response = get_docker_target_context(request)
+    if error_response:
+        return error_response
+
+    try:
+        restore_script = build_recycled_container_restore_script(record)
+    except ValueError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = run_target_docker_command(agent, password, remote_agent, ['sh', '-lc', restore_script], timeout=900)
+    if result['success']:
+        record.restored = True
+        record.restored_at = timezone.now()
+    record.restore_output = result.get('output', '')
+    record.save(update_fields=['restored', 'restored_at', 'restore_output', 'updated_at'])
+    return Response({
+        **result,
+        'container': RecycledContainerSerializer(record).data,
+    }, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST', 'DELETE'])

@@ -52,9 +52,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Start Django
+# Start Django by default; start the Docker control agent when agent env is supplied.
 CMD ["sh", "-c", "\
-python manage.py makemigrations && \
-python manage.py migrate && \
-python manage.py runserver 0.0.0.0:8000 \
+if [ -n \"$AGENT_ID\" ] && [ -n \"$AGENT_TOKEN\" ]; then \
+  python -m auth_app.docker_agent; \
+else \
+  python manage.py makemigrations && \
+  python manage.py migrate && \
+  python manage.py runserver 0.0.0.0:8000; \
+fi \
 "]

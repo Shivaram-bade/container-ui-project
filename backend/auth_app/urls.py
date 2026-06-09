@@ -18,6 +18,7 @@ urlpatterns = [
     path('agent-command/', views.agent_command, name='agent_command'),
     path('manual-create-container/', views.manual_create_container, name='manual_create_container'),
     path('container-detail/', views.container_detail, name='container_detail'),
+    path('container-monitoring/', views.container_monitoring, name='container_monitoring'),
     path('container-action/', views.container_action, name='container_action'),
     path('container-recycle-bin/', views.container_recycle_bin, name='container_recycle_bin'),
     path('container-network/', views.container_network, name='container_network'),

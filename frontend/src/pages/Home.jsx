@@ -9,28 +9,28 @@ const manualActions = [
     icon: 'CT',
     path: '/manual-create-container',
     title: 'Containers',
-    description: 'Create, inspect, restart, stop, delete, and open terminals for containers.',
+   // description: 'Create, inspect, restart, stop, delete, and open terminals for containers.',
   },
   {
     id: 'image',
     icon: 'IM',
     path: '/build-image',
     title: 'Images',
-    description: 'Build images from Dockerfiles and remove images that are no longer needed.',
+   // description: 'Build images from Dockerfiles and remove images that are no longer needed.',
   },
   {
     id: 'network',
     icon: 'NW',
     path: '/network',
     title: 'Networks',
-    description: 'Create networks and manage container connectivity with confidence.',
+   // description: 'Create networks and manage container connectivity with confidence.',
   },
   {
     id: 'volume',
     icon: 'VL',
     path: '/volume',
     title: 'Volumes',
-    description: 'Create persistent storage and remove unused Docker volumes.',
+   // description: 'Create persistent storage and remove unused Docker volumes.',
   },
 ];
 
@@ -39,7 +39,7 @@ const registryAction = {
   icon: 'RG',
   path: '/registry',
   title: 'Registry Deploy',
-  description: 'Deploy tagged images from the self-hosted registry to connected agents.',
+ // description: 'Deploy tagged images from the self-hosted registry to connected agents.',
 };
 
 const deploymentAction = {
@@ -47,7 +47,7 @@ const deploymentAction = {
   icon: 'DP',
   path: '/deployment',
   title: 'Deployments',
-  description: 'Deploy and operate full applications from Docker Compose files.',
+ // description: 'Deploy and operate full applications from Docker Compose files.',
 };
 
 const dashboardAction = {
@@ -55,7 +55,7 @@ const dashboardAction = {
   icon: 'DB',
   path: '/home',
   title: 'Dashboard',
-  description: 'Monitor containers, images, volumes, networks, and deployments from one place.',
+ // description: 'Monitor containers, images, volumes, networks, and deployments from one place.',
 };
 
 const homeActions = [...manualActions, deploymentAction];
@@ -65,7 +65,7 @@ const rbacAction = {
   icon: 'AC',
   path: '/rbac',
   title: 'Users & Access',
-  description: 'Create users, organize groups, and assign only the operations each user needs.',
+  //description: 'Create users, organize groups, and assign only the operations each user needs.',
 };
 
 const serverInfoAction = {
@@ -73,7 +73,15 @@ const serverInfoAction = {
   icon: 'SV',
   path: '/server-info',
   title: 'Server Health',
-  description: 'Review operating system, resource, and Docker health information.',
+  //description: 'Review operating system, resource, and Docker health information.',
+};
+
+const monitoringAction = {
+  id: 'monitoring',
+  icon: 'MO',
+  path: '/monitoring',
+  title: 'Monitoring',
+  //description: 'Watch live health, utilization, networking, and lifecycle data for every container.',
 };
 
 const userProfileAction = {
@@ -90,14 +98,14 @@ const agentActions = [
     icon: 'AG',
     path: '/agents/create',
     title: 'Add Agent',
-    description: 'Create new server agents to manage Docker on multiple servers from this option.',
+   // description: 'Create new server agents to manage Docker on multiple servers from this option.',
   },
   {
     id: 'agent-connected',
     icon: 'CN',
     path: '/agents/connected',
     title: 'Connected Agents',
-    description: 'See the health of every connected server Agent.',
+   // description: 'See the health of every connected server Agent.',
   },
 ];
 
@@ -105,7 +113,7 @@ const BUILD_JOB_STORAGE_KEY = 'vitel-active-build-job-id';
 const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
 const LOCAL_SERVER_ID = 'local';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
-const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, rbacAction, userProfileAction, ...agentActions];
+const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, rbacAction, userProfileAction, ...agentActions];
 const DashboardBackContext = createContext(null);
 
 const getStoredUser = () => {
@@ -471,6 +479,16 @@ export default function Home() {
   const [deletedAgents, setDeletedAgents] = useState([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [agentsError, setAgentsError] = useState('');
+  const [monitoringServerId, setMonitoringServerId] = useState('');
+  const [monitoringContainers, setMonitoringContainers] = useState([]);
+  const [monitoringLoading, setMonitoringLoading] = useState(false);
+  const [monitoringError, setMonitoringError] = useState('');
+  const [selectedMonitoringId, setSelectedMonitoringId] = useState('');
+  const [monitoringDetail, setMonitoringDetail] = useState(null);
+  const [monitoringDetailLoading, setMonitoringDetailLoading] = useState(false);
+  const [monitoringHistory, setMonitoringHistory] = useState([]);
+  const [monitoringActionLoading, setMonitoringActionLoading] = useState(false);
+  const [monitoringMessage, setMonitoringMessage] = useState('');
   const [rbacTab, setRbacTab] = useState('user');
   const [rbacData, setRbacData] = useState({ operations: [], users: [], groups: [] });
   const [rbacLoading, setRbacLoading] = useState(false);
@@ -504,6 +522,7 @@ export default function Home() {
       rbac: ['create_rbac_user', 'create_rbac_group'],
       'agent-create': ['create_agent'],
       'agent-connected': ['view_connected_agent'],
+      monitoring: ['create_container', 'delete_container', 'connect_container', 'view_connected_agent'],
       dashboard: ['view_connected_agent', 'create_container', 'delete_container', 'connect_container', 'build_images', 'delete_images', 'create_network', 'delete_network', 'create_volume', 'delete_volume', 'create_deployment', 'delete_deployment'],
     }[action.id];
     return !actionOperations || actionOperations.some((operation) => canOperate(operation));
@@ -517,6 +536,7 @@ export default function Home() {
   const isServerInfoActive = activeAction.id === 'server-info';
   const isCreateAgentActive = activeAction.id === 'agent-create';
   const isConnectedAgentActive = activeAction.id === 'agent-connected';
+  const isMonitoringActive = activeAction.id === 'monitoring';
   const isContainerActive = activeAction.id === 'container';
   const isBuildImageActive = activeAction.id === 'image';
   const isDeploymentActive = activeAction.id === 'deployment';
@@ -1070,9 +1090,20 @@ export default function Home() {
       loadRecycledContainers();
     };
 
+    const syncDashboardContainers = () => {
+      if (document.visibilityState !== 'visible') return;
+      const serverId = getSelectedDashboardServerId();
+      loadContainers(serverId, { silent: true, preserveSelection: true });
+      loadRecycledContainers({ silent: true });
+    };
+
     loadDashboardData();
     const refreshTimer = window.setInterval(loadDashboardData, 30000);
-    return () => window.clearInterval(refreshTimer);
+    const containerSyncTimer = window.setInterval(syncDashboardContainers, 5000);
+    return () => {
+      window.clearInterval(refreshTimer);
+      window.clearInterval(containerSyncTimer);
+    };
   }, [isDashboardActive, dashboardServerId]);
 
   useEffect(() => {
@@ -1188,36 +1219,87 @@ export default function Home() {
     }
   };
 
-  const loadContainers = async (serverId = getSelectedDockerServerId()) => {
-    setContainersLoading(true);
+  const loadContainers = async (
+    serverId = getSelectedDockerServerId(),
+    { silent = false, preserveSelection = false } = {}
+  ) => {
+    if (!silent) setContainersLoading(true);
     setContainersError('');
-    setSelectedContainer(null);
-    setSelectedContainerDetail(null);
+    if (!preserveSelection) {
+      setSelectedContainer(null);
+      setSelectedContainerDetail(null);
+    }
 
     try {
       const response = await authService.listContainers(serverId);
       setContainers(response.data.containers || []);
     } catch (error) {
       const data = error.response?.data;
-      setContainers([]);
+      if (!silent) setContainers([]);
       setContainersError(data?.error || data?.output || 'Unable to load containers.');
     } finally {
-      setContainersLoading(false);
+      if (!silent) setContainersLoading(false);
     }
   };
 
-  const loadRecycledContainers = async () => {
-    setRecycledContainersLoading(true);
+  const loadMonitoringContainers = async (serverId = monitoringServerId || LOCAL_SERVER_ID, { silent = false } = {}) => {
+    if (!silent) setMonitoringLoading(true);
+    setMonitoringError('');
+    try {
+      const response = await authService.getContainerMonitoring(serverId);
+      const nextContainers = response.data.containers || [];
+      setMonitoringContainers(nextContainers);
+      if (selectedMonitoringId && !nextContainers.some((container) => container.id === selectedMonitoringId)) {
+        setSelectedMonitoringId('');
+        setMonitoringDetail(null);
+        setMonitoringHistory([]);
+      }
+    } catch (error) {
+      const data = error.response?.data;
+      if (!silent) setMonitoringContainers([]);
+      setMonitoringError(data?.error || data?.output || 'Unable to load container monitoring data.');
+    } finally {
+      if (!silent) setMonitoringLoading(false);
+    }
+  };
+
+  const loadMonitoringDetail = async (containerId = selectedMonitoringId, { silent = false } = {}) => {
+    if (!containerId) return;
+    if (!silent) setMonitoringDetailLoading(true);
+    try {
+      const response = await authService.getContainerMonitoring(monitoringServerId || LOCAL_SERVER_ID, containerId);
+      const detail = response.data.container || null;
+      setMonitoringDetail(detail);
+      if (detail) {
+        const network = parseNetworkIOValue(detail.network_io);
+        setMonitoringHistory((current) => [...current, {
+          at: Date.now(),
+          cpu: parsePercentValue(detail.cpu_percent),
+          memory: parsePercentValue(detail.memory_percent),
+          networkRx: network.rx,
+          networkTx: network.tx,
+        }].slice(-24));
+      }
+    } catch (error) {
+      const data = error.response?.data;
+      setMonitoringError(data?.error || data?.output || 'Unable to load live container statistics.');
+    } finally {
+      if (!silent) setMonitoringDetailLoading(false);
+    }
+  };
+
+  const loadRecycledContainers = async ({ silent = false } = {}) => {
+    if (!silent) setRecycledContainersLoading(true);
     setRecycledContainersError('');
     try {
       const response = await authService.listRecycledContainers();
       setRecycledContainers(response.data.containers || []);
     } catch (error) {
       const data = error.response?.data;
-      setRecycledContainers([]);
+      if (!silent) setRecycledContainers([]);
       setRecycledContainersError(data?.error || 'Unable to load container recycle bin.');
     } finally {
-      setRecycledContainersLoading(false);
+      if (!silent) setRecycledContainersLoading(false);
     }
   };
 
@@ -1228,10 +1310,95 @@ export default function Home() {
       loadVolumes(getSelectedDockerServerId());
       loadImages(getSelectedDockerServerId());
     }
-    if (isContainerActive && containerTab === 'recyclebin') {
+    if (isContainerActive && ['existing', 'stopped', 'recyclebin'].includes(containerTab)) {
       loadRecycledContainers();
     }
   }, [isContainerActive, containerTab, containerServerId]);
+
+
+  useEffect(() => {
+    if (!isContainerActive || !['existing', 'stopped', 'recyclebin'].includes(containerTab)) {
+      return undefined;
+    }
+
+    const syncContainers = () => {
+      if (document.visibilityState !== 'visible') return;
+      loadContainers(getSelectedDockerServerId(), { silent: true, preserveSelection: true });
+      loadRecycledContainers({ silent: true });
+    };
+
+    const syncTimer = window.setInterval(syncContainers, 5000);
+    return () => window.clearInterval(syncTimer);
+  }, [isContainerActive, containerTab, containerServerId]);
+
+  useEffect(() => {
+    if (!isMonitoringActive) return undefined;
+    setSelectedMonitoringId('');
+    setMonitoringDetail(null);
+    setMonitoringHistory([]);
+    loadAgents();
+    loadMonitoringContainers(monitoringServerId || LOCAL_SERVER_ID);
+    const syncMonitoringInventory = () => {
+      if (document.visibilityState === 'visible') {
+        loadMonitoringContainers(monitoringServerId || LOCAL_SERVER_ID, { silent: true });
+      }
+    };
+    const timer = window.setInterval(syncMonitoringInventory, 10000);
+    return () => window.clearInterval(timer);
+  }, [isMonitoringActive, monitoringServerId]);
+
+  useEffect(() => {
+    if (!isMonitoringActive || !selectedMonitoringId) return undefined;
+    loadMonitoringDetail(selectedMonitoringId);
+    const syncMonitoringDetail = () => {
+      if (document.visibilityState === 'visible') {
+        loadMonitoringDetail(selectedMonitoringId, { silent: true });
+      }
+    };
+    const timer = window.setInterval(syncMonitoringDetail, 3000);
+    return () => window.clearInterval(timer);
+  }, [isMonitoringActive, monitoringServerId, selectedMonitoringId]);
+
+  useEffect(() => {
+    const resourceInventoryVisible =
+      (isBuildImageActive && imageTab === 'delete') ||
+      (isNetworkActive && networkTab === 'delete') ||
+      (isVolumeActive && volumeTab === 'delete');
+    if (!resourceInventoryVisible) return undefined;
+    const serverId = getSelectedDockerServerId();
+    loadMonitoringContainers(serverId, { silent: true });
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadMonitoringContainers(serverId, { silent: true });
+      }
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [isBuildImageActive, imageTab, isNetworkActive, networkTab, isVolumeActive, volumeTab, containerServerId]);
+
+  useEffect(() => {
+    if (!selectedContainer) return;
+    const selectedId = getContainerId(selectedContainer);
+    const currentContainer = containers.find((container) => getContainerId(container) === selectedId);
+    if (currentContainer) {
+      if (currentContainer !== selectedContainer) setSelectedContainer(currentContainer);
+      return;
+    }
+
+    setSelectedContainer(null);
+    setSelectedContainerDetail(null);
+    setContainerInspectOutputOpen(false);
+    if (String(containerLogTarget?.id || '') === String(selectedId)) {
+      setContainerLogOutputOpen(false);
+      setContainerLogTarget(null);
+    }
+    if (String(activeShellContainer?.id || '') === String(selectedId)) {
+      closeActiveShellSession();
+      setConnectModalOpen(false);
+      setActiveShellContainer(null);
+      setShellOutput('');
+    }
+    setContainerActionMessage('Container no longer exists on the selected server. The list was synchronized with Docker.');
+  }, [containers]);
 
   const handleSelectContainer = async (container) => {
     setSelectedContainer(container);
@@ -1397,6 +1564,52 @@ export default function Home() {
     setContainerInspectOutputOpen(true);
   };
 
+  const handleMonitoringAction = async (action) => {
+    if (!monitoringDetail?.id) return;
+    setMonitoringActionLoading(true);
+    setMonitoringMessage('');
+    try {
+      const response = await authService.containerAction(
+        monitoringDetail.id,
+        action,
+        monitoringServerId || LOCAL_SERVER_ID
+      );
+      if (action === 'delete') {
+        setMonitoringMessage('Container deleted and moved to the recycle bin.');
+        setSelectedMonitoringId('');
+        setMonitoringDetail(null);
+        setMonitoringHistory([]);
+        if (response.data?.recycled_container) loadRecycledContainers();
+      } else {
+        setMonitoringMessage('Container ' + action + ' completed successfully.');
+      }
+      await loadMonitoringContainers(monitoringServerId || LOCAL_SERVER_ID, { silent: true });
+      if (action !== 'delete') await loadMonitoringDetail(monitoringDetail.id, { silent: true });
+      loadAgents();
+    } catch (error) {
+      const data = error.response?.data;
+      setMonitoringMessage(data?.error || data?.output || 'Container action failed.');
+    } finally {
+      setMonitoringActionLoading(false);
+    }
+  };
+
+  const handleMonitoringLogs = (container) => {
+    loadContainerLogs(
+      container.id,
+      monitoringServerId || LOCAL_SERVER_ID,
+      container.name + ' logs'
+    );
+  };
+
+  const handleMonitoringTerminal = (container) => {
+    if ((monitoringServerId || LOCAL_SERVER_ID) !== LOCAL_SERVER_ID) {
+      setMonitoringMessage('Interactive terminal is currently available for containers on the application server.');
+      return;
+    }
+    handleConnectClick(container);
+  };
+
   const handleDashboardNavigate = (target) => {
     if (target === 'running') {
       setContainerServerId(dashboardServerId);
@@ -1553,10 +1766,14 @@ export default function Home() {
     }
   };
 
-  const handleConnectClick = async () => {
-    if (!selectedContainer) return;
-    const selectedContainerId = selectedContainer.ID || selectedContainer.Id || selectedContainer.id;
-    const selectedContainerName = selectedContainer.Names?.[0]?.replace(/^\//, '') || 'container';
+  const handleConnectClick = async (containerOverride = null) => {
+    const targetContainer = containerOverride?.id ? {
+      ID: containerOverride.id,
+      Names: ['/' + (containerOverride.name || 'container')],
+    } : selectedContainer;
+    if (!targetContainer) return;
+    const selectedContainerId = targetContainer.ID || targetContainer.Id || targetContainer.id;
+    const selectedContainerName = targetContainer.Names?.[0]?.replace(/^\//, '') || 'container';
 
     if (!selectedContainerId) {
       setConnectMessage('Container ID is missing.');
@@ -2954,6 +3171,12 @@ export default function Home() {
               ))}
             </>
           )}
+
+          {canSeeAction(monitoringAction) && renderNavItem(
+            monitoringAction,
+            isMonitoringActive,
+            () => handleActionSelect(monitoringAction)
+          )}
         </nav>
 
         <button type="button" className="home-logout" onClick={handleLogout}>
@@ -3059,6 +3282,54 @@ export default function Home() {
             loading={serverInfoLoading}
             error={serverInfoError}
             onRefresh={() => loadServerInfo(true)}
+          />
+        ) : isMonitoringActive ? (
+          <MonitoringPanel
+            serverId={monitoringServerId}
+            onServerIdChange={setMonitoringServerId}
+            agents={agents}
+            agentsLoading={agentsLoading}
+            containers={monitoringContainers}
+            loading={monitoringLoading}
+            error={monitoringError}
+            selectedId={selectedMonitoringId}
+            detail={monitoringDetail}
+            detailLoading={monitoringDetailLoading}
+            history={monitoringHistory}
+            actionLoading={monitoringActionLoading}
+            message={monitoringMessage}
+            onSelect={(containerId) => {
+              setSelectedMonitoringId(containerId);
+              setMonitoringDetail(null);
+              setMonitoringHistory([]);
+              setMonitoringMessage('');
+            }}
+            onRefresh={() => loadMonitoringContainers(monitoringServerId || LOCAL_SERVER_ID)}
+            onAction={handleMonitoringAction}
+            onLogs={handleMonitoringLogs}
+            onTerminal={handleMonitoringTerminal}
+            containerLogOutput={containerLogOutput}
+            containerLogTitle={containerLogTitle}
+            containerLogOutputOpen={containerLogOutputOpen}
+            onCloseContainerLogOutput={() => {
+              setContainerLogOutputOpen(false);
+              setContainerLogTarget(null);
+            }}
+            outputModalPosition={outputModalPosition}
+            onOutputModalDragStart={handleOutputModalDragStart}
+            connectModalOpen={connectModalOpen}
+            connectModalPosition={connectModalPosition}
+            activeShellContainer={activeShellContainer}
+            shellSessionId={shellSessionId}
+            shellOutput={shellOutput}
+            shellInput={shellInput}
+            shellInputLoading={shellInputLoading}
+            shellInputRef={shellInputRef}
+            onShellInputChange={setShellInput}
+            onSendShellCommand={handleSendShellCommand}
+            onCloseConnectModal={handleCloseShell}
+            onConnectModalDragStart={handleConnectModalDragStart}
+            canOperate={canOperate}
           />
         ) : isCreateAgentActive || isConnectedAgentActive ? (
           <AgentPanel
@@ -3375,6 +3646,7 @@ export default function Home() {
             images={images}
             imagesLoading={imagesLoading}
             imagesError={imagesError}
+            attachmentContainers={monitoringContainers}
             selectedImages={selectedImages}
             pendingDeleteImages={pendingDeleteImages}
             imageDeleteLoading={imageDeleteLoading}
@@ -3418,6 +3690,7 @@ export default function Home() {
             networks={networks}
             networksLoading={networksLoading}
             networksError={networksError}
+            attachmentContainers={monitoringContainers}
             selectedNetworks={selectedNetworks}
             pendingDeleteNetworks={pendingDeleteNetworks}
             networkDeleteLoading={networkDeleteLoading}
@@ -3444,6 +3717,7 @@ export default function Home() {
             volumes={volumes}
             volumesLoading={volumesLoading}
             volumesError={volumesError}
+            attachmentContainers={monitoringContainers}
             selectedVolumes={selectedVolumes}
             pendingDeleteVolumes={pendingDeleteVolumes}
             volumeDeleteLoading={volumeDeleteLoading}
@@ -3476,6 +3750,280 @@ export default function Home() {
 }
 
 
+
+function parsePercentValue(value) {
+  const parsed = Number.parseFloat(String(value || '0').replace('%', ''));
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+function parseDockerSize(value) {
+  const match = String(value || '0B').trim().match(/^([0-9.]+)\s*([kmgt]?i?b)?$/i);
+  if (!match) return 0;
+  const amount = Number.parseFloat(match[1]) || 0;
+  const unit = (match[2] || 'B').toUpperCase();
+  const factors = { B: 1, KB: 1000, KIB: 1024, MB: 1000000, MIB: 1048576, GB: 1000000000, GIB: 1073741824, TB: 1000000000000, TIB: 1099511627776 };
+  return amount * (factors[unit] || 1);
+}
+
+function parseNetworkIOValue(value) {
+  const parts = String(value || '').split('/');
+  return {
+    rx: parseDockerSize(parts[0]),
+    tx: parseDockerSize(parts[1]),
+  };
+}
+
+function formatMonitoringUptime(startedAt, running) {
+  if (!running || !startedAt) return 'Not running';
+  const started = new Date(startedAt).getTime();
+  if (!Number.isFinite(started)) return 'Unavailable';
+  const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days) return days + 'd ' + hours + 'h ' + minutes + 'm';
+  if (hours) return hours + 'h ' + minutes + 'm';
+  return minutes + 'm ' + (seconds % 60) + 's';
+}
+
+function buildChartPoints(values, maxValue) {
+  if (!values.length) return '';
+  const width = 300;
+  const height = 90;
+  const ceiling = Math.max(maxValue || 0, ...values, 1);
+  return values.map((value, index) => {
+    const x = values.length === 1 ? width : (index / (values.length - 1)) * width;
+    const y = height - Math.min(value / ceiling, 1) * (height - 8) - 4;
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+}
+
+function MonitoringChart({ title, value, primaryValues, secondaryValues = [], maxValue = 100, primaryLabel, secondaryLabel }) {
+  return (
+    <article className="monitoring-chart-card">
+      <div className="monitoring-chart-heading">
+        <div><span>{title}</span><strong>{value}</strong></div>
+        <div className="monitoring-chart-legend">
+          {primaryLabel && <span><i className="chart-key primary" />{primaryLabel}</span>}
+          {secondaryLabel && <span><i className="chart-key secondary" />{secondaryLabel}</span>}
+        </div>
+      </div>
+      <svg viewBox="0 0 300 90" role="img" aria-label={title + ' recent history'} preserveAspectRatio="none">
+        <path className="monitoring-chart-grid" d="M0 22.5H300 M0 45H300 M0 67.5H300" />
+        <polyline className="monitoring-chart-line primary" points={buildChartPoints(primaryValues, maxValue)} />
+        {secondaryValues.length > 0 && <polyline className="monitoring-chart-line secondary" points={buildChartPoints(secondaryValues, maxValue)} />}
+      </svg>
+    </article>
+  );
+}
+
+function ResourceAttachmentIndicator({ attached, label }) {
+  return (
+    <span className="resource-attachment" title={attached ? 'Attached to a container' : 'Not attached to any container'}>
+      <span className={'resource-attachment-dot ' + (attached ? 'attached' : 'detached')} aria-hidden="true" />
+      <span>{label}</span>
+      <small>{attached ? 'Attached' : 'Not attached'}</small>
+    </span>
+  );
+}
+
+function isImageAttached(image, containers = []) {
+  const reference = getImageDisplayName(image);
+  const id = String(getImageId(image) || '').replace('sha256:', '');
+  return containers.some((container) => {
+    const containerImage = String(container.image || '');
+    const containerImageId = String(container.image_id || '').replace('sha256:', '');
+    return containerImage === reference || (id && id !== 'Unavailable' && containerImageId.startsWith(id));
+  });
+}
+
+function isNetworkAttached(name, containers = []) {
+  return containers.some((container) => (container.networks || []).some((network) => network.name === name));
+}
+
+function isVolumeAttached(name, containers = []) {
+  return containers.some((container) => (container.mounts || []).some((mount) => mount.type === 'volume' && mount.name === name));
+}
+
+function MonitoringPanel({
+  serverId,
+  onServerIdChange,
+  agents,
+  agentsLoading,
+  containers,
+  loading,
+  error,
+  selectedId,
+  detail,
+  detailLoading,
+  history,
+  actionLoading,
+  message,
+  onSelect,
+  onRefresh,
+  onAction,
+  onLogs,
+  onTerminal,
+  containerLogOutput,
+  containerLogTitle,
+  containerLogOutputOpen,
+  onCloseContainerLogOutput,
+  outputModalPosition,
+  onOutputModalDragStart,
+  connectModalOpen,
+  connectModalPosition,
+  activeShellContainer,
+  shellSessionId,
+  shellOutput,
+  shellInput,
+  shellInputLoading,
+  shellInputRef,
+  onShellInputChange,
+  onSendShellCommand,
+  onCloseConnectModal,
+  onConnectModalDragStart,
+  canOperate = () => true,
+}) {
+  const terminalOutputRef = useRef(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const serverOptions = ensureLocalServerOption(agents);
+  const selectedServer = serverOptions.find((agent) => String(agent.id) === String(serverId || LOCAL_SERVER_ID)) || serverOptions[0];
+  const cpuValues = history.map((sample) => sample.cpu);
+  const memoryValues = history.map((sample) => sample.memory);
+  const networkRxValues = history.map((sample) => sample.networkRx);
+  const networkTxValues = history.map((sample) => sample.networkTx);
+  const networkMax = Math.max(...networkRxValues, ...networkTxValues, 1);
+  const statusClass = detail?.status === 'running' ? 'attached' : 'detached';
+  const healthClass = detail?.health === 'healthy' ? 'attached' : detail?.health === 'unhealthy' ? 'detached' : 'neutral';
+
+  useEffect(() => {
+    if (terminalOutputRef.current) terminalOutputRef.current.scrollTop = terminalOutputRef.current.scrollHeight;
+  }, [shellOutput, connectModalOpen]);
+
+  useEffect(() => {
+    setDeleteConfirmOpen(false);
+  }, [detail?.id]);
+
+  return (
+    <section className="home-panel monitoring-panel">
+      <PanelIntro title="Container Monitoring" description="Cloud-style live visibility for every Docker container on the selected server.">
+        <button type="button" className="home-secondary-button" onClick={onRefresh} disabled={loading}>Refresh</button>
+      </PanelIntro>
+
+      <div className="monitoring-toolbar">
+        <label className="agent-select-field">
+          <span>Select Agent</span>
+          <select value={serverId || LOCAL_SERVER_ID} onChange={(event) => onServerIdChange(event.target.value === LOCAL_SERVER_ID ? '' : event.target.value)} disabled={agentsLoading || loading}>
+            <option value={LOCAL_SERVER_ID}>This application server</option>
+            {serverOptions.filter((agent) => agent.id !== LOCAL_SERVER_ID).map((agent) => (
+              <option value={agent.id} key={agent.id}>{agent.name} ({agent.server_ip}:{agent.port || 19541})</option>
+            ))}
+          </select>
+        </label>
+        <div className="monitoring-server-summary">
+          <span className={'resource-attachment-dot ' + (selectedServer?.connected !== false ? 'attached' : 'detached')} />
+          <div><strong>{selectedServer?.name || 'Application server'}</strong><small>{containers.length} container(s) discovered</small></div>
+        </div>
+      </div>
+
+      {error && <p className="container-message error">{error}</p>}
+      <div className="monitoring-layout">
+        <aside className="monitoring-container-list">
+          <div className="monitoring-list-heading"><h3>Containers</h3><span>{containers.length}</span></div>
+          {loading ? <p className="resource-empty-state">Loading containers...</p> : containers.length ? containers.map((container) => (
+            <button type="button" key={container.id} className={'monitoring-container-row ' + (selectedId === container.id ? 'selected' : '')} onClick={() => onSelect(container.id)}>
+              <span className={'resource-attachment-dot ' + (container.running ? 'attached' : 'detached')} />
+              <span className="monitoring-container-copy"><strong>{container.name}</strong><small>{container.image}</small></span>
+              <span className="monitoring-row-status">{container.status}</span>
+            </button>
+          )) : <p className="resource-empty-state">No containers found on this server.</p>}
+        </aside>
+
+        <div className="monitoring-detail">
+          {!selectedId ? (
+            <div className="monitoring-empty"><strong>Select a container</strong><span>Live metrics and container information will appear here.</span></div>
+          ) : detailLoading && !detail ? (
+            <p className="resource-empty-state">Loading monitoring statistics...</p>
+          ) : detail ? (
+            <>
+              <header className="monitoring-detail-header">
+                <div><span className="monitoring-eyebrow">Container</span><h2>{detail.name}</h2><p>{detail.image}</p></div>
+                <div className="monitoring-live-signals">
+                  <span><i className={'resource-attachment-dot ' + statusClass} />{detail.status}</span>
+                  <span><i className={'resource-attachment-dot ' + healthClass} />{detail.health.replace('-', ' ')}</span>
+                  {detail.running && <span className="monitoring-live-badge">Live</span>}
+                </div>
+              </header>
+
+              <div className="monitoring-charts">
+                <MonitoringChart title="CPU Usage" value={detail.cpu_percent} primaryValues={cpuValues} primaryLabel="CPU" />
+                <MonitoringChart title="Memory Usage" value={detail.memory_usage} primaryValues={memoryValues} primaryLabel="Memory" />
+                <MonitoringChart title="Network I/O" value={detail.network_io} primaryValues={networkRxValues} secondaryValues={networkTxValues} maxValue={networkMax} primaryLabel="Download" secondaryLabel="Upload" />
+              </div>
+
+              <section className="monitoring-information">
+                <div className="monitoring-section-heading"><h3>Container Information</h3><span>Updated every 3 seconds</span></div>
+                <dl className="monitoring-information-grid">
+                  <div><dt>Container Name</dt><dd>{detail.name}</dd></div>
+                  <div><dt>Status</dt><dd>{detail.status}</dd></div>
+                  <div><dt>Health</dt><dd>{detail.health.replace('-', ' ')}</dd></div>
+                  <div><dt>Image</dt><dd>{detail.image}</dd></div>
+                  <div><dt>CPU Usage</dt><dd>{detail.cpu_percent}</dd></div>
+                  <div><dt>Memory Usage</dt><dd>{detail.memory_usage}</dd></div>
+                  <div><dt>Network</dt><dd>{detail.network_io}</dd></div>
+                  <div><dt>Uptime</dt><dd>{formatMonitoringUptime(detail.started_at, detail.running)}</dd></div>
+                  <div><dt>Restarts</dt><dd>{detail.restarts}</dd></div>
+                  <div><dt>IP Address</dt><dd>{detail.ip_address || 'Not assigned'}</dd></div>
+                  <div><dt>Created</dt><dd>{detail.created ? new Date(detail.created).toLocaleString() : 'Unavailable'}</dd></div>
+                </dl>
+              </section>
+
+              {message && <p className="container-message">{message}</p>}
+              <div className="monitoring-actions">
+                <button type="button" className="home-secondary-button" onClick={() => onLogs(detail)}>Logs</button>
+                <button type="button" className="home-secondary-button" onClick={() => onTerminal(detail)} disabled={!detail.running || !canOperate('connect_container')}>Terminal</button>
+                <button type="button" className="home-primary-button" onClick={() => onAction('restart')} disabled={!detail.running || actionLoading}>Restart</button>
+                {detail.running ? <button type="button" className="home-danger-button" onClick={() => onAction('stop')} disabled={actionLoading}>Stop</button> : <button type="button" className="home-primary-button" onClick={() => onAction('start')} disabled={actionLoading}>Start</button>}
+                <button type="button" className="home-danger-button" onClick={() => setDeleteConfirmOpen(true)} disabled={!canOperate('delete_container') || actionLoading}>Delete</button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {deleteConfirmOpen && detail && (
+        <div className="output-modal-backdrop" role="presentation">
+          <div className="resource-delete-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-delete-title">
+            <h3 id="monitoring-delete-title">Delete {detail.name}?</h3>
+            <p>The container will be stopped, preserved, and moved to the container recycle bin.</p>
+            <div className="resource-modal-actions">
+              <button type="button" className="home-danger-button" onClick={() => { setDeleteConfirmOpen(false); onAction('delete'); }} disabled={actionLoading}>Confirm</button>
+              <button type="button" className="home-secondary-button" onClick={() => setDeleteConfirmOpen(false)} disabled={actionLoading}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {containerLogOutputOpen && (
+        <div className="output-modal-layer" role="presentation"><div className="output-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-log-title" style={{ transform: 'translate(' + outputModalPosition.x + 'px, ' + outputModalPosition.y + 'px)' }} onPointerDown={onOutputModalDragStart}>
+          <div className="output-modal-heading draggable"><h3 id="monitoring-log-title">{containerLogTitle || 'Container logs'}</h3><span className="live-output-badge">Live</span><button type="button" onClick={onCloseContainerLogOutput} onPointerDown={(event) => event.stopPropagation()}>Close</button></div>
+          <pre>{containerLogOutput || 'No output yet.'}</pre>
+        </div></div>
+      )}
+
+      {connectModalOpen && activeShellContainer && (
+        <div className="output-modal-layer" role="presentation"><div className="output-modal connect-modal terminal-modal container-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-terminal-title" style={{ left: connectModalPosition.x + 'px', top: connectModalPosition.y + 'px', transform: 'none' }} onPointerDown={onConnectModalDragStart}>
+          <div className="output-modal-heading draggable"><h3 id="monitoring-terminal-title">Connected to {activeShellContainer.name}</h3><button type="button" onClick={onCloseConnectModal} onPointerDown={(event) => event.stopPropagation()}>Close</button></div>
+          <div className="terminal-banner">connected to {activeShellContainer.name}</div>
+          <div className="terminal-output" ref={terminalOutputRef} onClick={() => shellInputRef.current?.focus()} onPointerDown={(event) => event.stopPropagation()}>
+            <pre>{shellOutput}</pre>
+            {shellSessionId && <form className="terminal-input-form" onSubmit={onSendShellCommand}><input ref={shellInputRef} type="text" className="terminal-input" value={shellInput} onChange={(event) => onShellInputChange(event.target.value)} disabled={shellInputLoading} autoComplete="off" spellCheck="false" aria-label={'Terminal command for ' + activeShellContainer.name} autoFocus /></form>}
+          </div>
+        </div></div>
+      )}
+    </section>
+  );
+}
 
 function DashboardPanel({
   dashboardServerId,
@@ -5172,6 +5720,7 @@ function VolumePanel({
   volumes,
   volumesLoading,
   volumesError,
+  attachmentContainers,
   selectedVolumes,
   pendingDeleteVolumes,
   volumeDeleteLoading,
@@ -5302,7 +5851,7 @@ function VolumePanel({
                             aria-label={`Select ${name}`}
                           />
                         </td>
-                        <td>{name}</td>
+                        <td><ResourceAttachmentIndicator attached={isVolumeAttached(name, attachmentContainers)} label={name} /></td>
                         <td>{id}</td>
                         <td>{volume.Driver || volume.driver || 'local'}</td>
                       </tr>
@@ -5425,6 +5974,7 @@ function NetworkPanel({
   networks,
   networksLoading,
   networksError,
+  attachmentContainers,
   selectedNetworks,
   pendingDeleteNetworks,
   networkDeleteLoading,
@@ -5558,7 +6108,7 @@ function NetworkPanel({
                             aria-label={`Select ${name}`}
                           />
                         </td>
-                        <td>{name}</td>
+                        <td><ResourceAttachmentIndicator attached={isNetworkAttached(name, attachmentContainers)} label={name} /></td>
                         <td>{id}</td>
                         <td>{network.Driver || network.driver || 'bridge'}</td>
                       </tr>
@@ -6563,6 +7113,7 @@ function BuildImagePanel({
   images,
   imagesLoading,
   imagesError,
+  attachmentContainers,
   selectedImages,
   pendingDeleteImages,
   imageDeleteLoading,
@@ -6733,7 +7284,7 @@ function BuildImagePanel({
                             aria-label={`Select ${getImageDisplayName(image)}`}
                           />
                         </td>
-                        <td>{getImageName(image)}</td>
+                        <td><ResourceAttachmentIndicator attached={isImageAttached(image, attachmentContainers)} label={getImageName(image)} /></td>
                         <td>{id}</td>
                         <td>{getImageTag(image)}</td>
                         <td>{image.Size || image.size || 'Unavailable'}</td>

@@ -174,6 +174,15 @@ export const authService = {
     });
   },
 
+  getContainerMonitoring: (serverId, containerId = '') => {
+    return api.get('/api/auth/container-monitoring/', {
+      params: {
+        ...(serverId ? { server_id: serverId } : {}),
+        ...(containerId ? { id: containerId } : {}),
+      },
+    });
+  },
+
   containerAction: (containerId, action, serverId) => {
     return api.post('/api/auth/container-action/', {
       id: containerId,

@@ -4205,6 +4205,144 @@ def container_detail(request):
     }, status=status.HTTP_200_OK)
 
 
+def build_container_monitoring_record(container_data, stats_data=None):
+    state = container_data.get("State") or {}
+    config = container_data.get("Config") or {}
+    networks_data = (container_data.get("NetworkSettings") or {}).get("Networks") or {}
+    health_data = state.get("Health") or {}
+    running = bool(state.get("Running"))
+    status_value = str(state.get("Status") or ("running" if running else "stopped")).strip().lower()
+    health_value = str(health_data.get("Status") or "").strip().lower()
+    if not health_value:
+        health_value = "not-configured" if running else "unavailable"
+
+    networks = []
+    ip_addresses = []
+    for network_name, network in networks_data.items():
+        ip_address = str(network.get("IPAddress") or "").strip()
+        networks.append({
+            "name": network_name,
+            "id": network.get("NetworkID") or "",
+            "ip_address": ip_address,
+        })
+        if ip_address:
+            ip_addresses.append(ip_address)
+
+    mounts = [
+        {
+            "type": mount.get("Type") or "",
+            "name": mount.get("Name") or "",
+            "source": mount.get("Source") or "",
+            "destination": mount.get("Destination") or "",
+        }
+        for mount in container_data.get("Mounts") or []
+    ]
+    stats = stats_data or {}
+    return {
+        "id": container_data.get("Id") or "",
+        "name": str(container_data.get("Name") or "").lstrip("/") or "Unknown",
+        "status": status_value,
+        "running": running,
+        "health": health_value,
+        "image": config.get("Image") or "",
+        "image_id": container_data.get("Image") or "",
+        "cpu_percent": stats.get("CPUPerc") or "0%",
+        "memory_usage": stats.get("MemUsage") or "0B / 0B",
+        "memory_percent": stats.get("MemPerc") or "0%",
+        "network_io": stats.get("NetIO") or "0B / 0B",
+        "block_io": stats.get("BlockIO") or "0B / 0B",
+        "pids": stats.get("PIDs") or "0",
+        "started_at": state.get("StartedAt") or "",
+        "finished_at": state.get("FinishedAt") or "",
+        "restarts": container_data.get("RestartCount") or 0,
+        "ip_address": ", ".join(ip_addresses),
+        "created": container_data.get("Created") or "",
+        "networks": networks,
+        "mounts": mounts,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def container_monitoring(request):
+    # Return inspect-backed inventory and live stats for one Docker container.
+    agent, password, remote_agent, error_response = get_docker_target_context(request)
+    if error_response:
+        return error_response
+
+    container_id = str(request.GET.get("id") or "").strip()
+    if container_id:
+        inspect_result = run_target_docker_command(
+            agent, password, remote_agent,
+            ["docker", "inspect", container_id, "--format", "{{json .}}"],
+            timeout=30,
+        )
+        if not inspect_result["success"]:
+            return Response({
+                **inspect_result,
+                "success": False,
+                "error": inspect_result.get("output") or "Unable to inspect the selected container.",
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            container_data = json.loads(inspect_result["output"].splitlines()[0])
+        except (json.JSONDecodeError, IndexError):
+            return Response({
+                "success": False,
+                "error": "Docker returned invalid monitoring details.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        stats_data = {}
+        if (container_data.get("State") or {}).get("Running"):
+            stats_result = run_target_docker_command(
+                agent, password, remote_agent,
+                ["docker", "stats", "--no-stream", "--format", "{{json .}}", container_id],
+                timeout=30,
+            )
+            if stats_result["success"] and stats_result.get("output"):
+                try:
+                    stats_data = json.loads(stats_result["output"].splitlines()[0])
+                except (json.JSONDecodeError, IndexError):
+                    stats_data = {}
+
+        return Response({
+            "success": True,
+            "container": build_container_monitoring_record(container_data, stats_data),
+        }, status=status.HTTP_200_OK)
+
+    list_result = run_target_docker_command(
+        agent, password, remote_agent,
+        ["docker", "ps", "-aq"],
+        timeout=30,
+    )
+    if not list_result["success"]:
+        return Response({**list_result, "containers": []}, status=status.HTTP_400_BAD_REQUEST)
+
+    container_ids = [line.strip() for line in list_result.get("output", "").splitlines() if line.strip()]
+    containers = []
+    if container_ids:
+        inspect_result = run_target_docker_command(
+            agent, password, remote_agent,
+            ["docker", "inspect", *container_ids],
+            timeout=60,
+        )
+        if not inspect_result["success"]:
+            return Response({**inspect_result, "containers": []}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            containers = [
+                build_container_monitoring_record(container_data)
+                for container_data in json.loads(inspect_result.get("output") or "[]")
+            ]
+        except json.JSONDecodeError:
+            return Response({
+                "success": False,
+                "error": "Docker returned invalid container inventory data.",
+                "containers": [],
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({"success": True, "containers": containers}, status=status.HTTP_200_OK)
+
+
 def normalize_container_inspect_name(container_data, fallback='container'):
     name = str(container_data.get('Name') or fallback or 'container').strip().lstrip('/')
     name = re.sub(r'[^a-zA-Z0-9_.-]+', '-', name).strip('-_.')

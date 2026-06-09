@@ -17,6 +17,7 @@ function App() {
     '/rbac',
     '/agents/create',
     '/agents/connected',
+    '/monitoring',
     '/api/auth/deployment-detail',
     '/api/auth/deployment-detail/:deploymentId',
     '/api/auth/deployment-detail/*',

@@ -6996,3 +6996,106 @@ input[type="checkbox"] {
     justify-content: flex-start;
   }
 }
+/* Agent management delete and redeploy selectors. */
+.agent-management-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 14px;
+}
+
+.agent-management-grid label {
+  min-width: 0;
+}
+/* Container recycle-bin delete and resource shortcuts. */
+.resource-stat-button {
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+}
+
+.resource-stat-button:hover:not(:disabled) {
+  border-color: var(--cmd-accent, #18b7a0) !important;
+  box-shadow: 0 12px 28px rgba(24, 183, 160, 0.16) !important;
+  transform: translateY(-2px);
+}
+
+.resource-stat-button:disabled {
+  cursor: default;
+  opacity: 0.52;
+  box-shadow: none !important;
+  transform: none;
+}
+
+.container-resource-shortcuts {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)) !important;
+}
+
+.recycle-bin-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dv-delete-bin {
+  z-index: 4;
+  left: 19px;
+  bottom: 12px;
+  width: 28px;
+  height: 30px;
+  border: 1px solid rgba(248, 113, 113, 0.68);
+  border-radius: 4px 4px 8px 8px;
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.8), rgba(127, 29, 29, 0.74));
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.32);
+  animation: dashboard-delete-pulse 3.2s ease-in-out infinite;
+}
+
+.dv-delete-bin::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: -7px;
+  width: 34px;
+  height: 5px;
+  border-radius: 4px;
+  background: rgba(248, 113, 113, 0.92);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+}
+
+@keyframes dashboard-delete-pulse {
+  0%, 100% { transform: translateY(0); filter: brightness(0.9); }
+  50% { transform: translateY(-3px); filter: brightness(1.2); }
+}
+
+/* Whole-surface draggable output windows and container inspect output. */
+.output-modal {
+  cursor: grab;
+}
+
+.output-modal:active {
+  cursor: grabbing;
+}
+
+.output-modal button,
+.output-modal input,
+.output-modal select,
+.output-modal textarea,
+.output-modal a,
+.output-modal label,
+.output-modal [data-no-modal-drag],
+.output-modal .terminal-output,
+.output-modal .volume-gui-body {
+  cursor: auto;
+}
+
+.container-inspect-modal {
+  width: min(920px, calc(100vw - 32px));
+}
+
+.container-inspect-modal pre {
+  max-height: min(650px, calc(100vh - 120px));
+}

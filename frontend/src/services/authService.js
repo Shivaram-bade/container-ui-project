@@ -186,10 +186,20 @@ export const authService = {
     return api.get('/api/auth/container-recycle-bin/');
   },
 
-  restoreRecycledContainer: (recycleId, serverId) => {
+  restoreRecycledContainer: (recycleId, serverId, image) => {
     return api.post('/api/auth/container-recycle-bin/', {
       id: recycleId,
+      image,
       ...(serverId ? { server_id: serverId } : {}),
+    });
+  },
+
+  deleteRecycledContainer: (recycleId, serverId) => {
+    return api.delete('/api/auth/container-recycle-bin/', {
+      data: {
+        id: recycleId,
+        ...(serverId ? { server_id: serverId } : {}),
+      },
     });
   },
 

@@ -61,6 +61,8 @@ DEPLOY_JOBS_LOCK = threading.Lock()
 CONTAINER_SHELLS = {}
 CONTAINER_SHELLS_LOCK = threading.Lock()
 
+RECYCLED_CONTAINER_SNAPSHOT_KEY = '_vitel_recycle_snapshot'
+
 TERMINAL_CONTROL_SEQUENCE_RE = re.compile(
     r'\x1B(?:'
     r'\][^\x07]*(?:\x07|\x1B\\)|'
@@ -1566,7 +1568,7 @@ def authenticate_agent_request_payload(request):
             'error': 'Agent name and password are required.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    agent_query = Agent.objects.filter(id=agent_id) if agent_id else Agent.objects.filter(name=name)
+    agent_query = Agent.objects.filter(id=agent_id, is_deleted=False) if agent_id else Agent.objects.filter(name=name, is_deleted=False)
     agent = agent_query.first()
     if not agent or not check_password(password, agent.password_hash):
         return None, password, Response({
@@ -2474,7 +2476,7 @@ def get_docker_target_context(request):
         return None, '', False, None
 
     try:
-        agent = Agent.objects.get(owner=request.user, id=server_id)
+        agent = Agent.objects.get(owner=request.user, id=server_id, is_deleted=False)
     except (Agent.DoesNotExist, ValueError):
         return None, '', False, Response({
             'success': False,
@@ -3440,19 +3442,22 @@ def agents(request):
         stale_cutoff = timezone.now() - timedelta(minutes=2)
         Agent.objects.filter(
             owner=request.user,
+            is_deleted=False,
             connected=True,
             last_seen__lt=stale_cutoff,
         ).update(connected=False)
         cleanup_orphan_local_agent_containers(request.user)
         registered_agents = sync_local_agent_container_states(
             request,
-            list(Agent.objects.filter(owner=request.user)),
+            list(Agent.objects.filter(owner=request.user, is_deleted=False)),
         )
+        deleted_agents = Agent.objects.filter(owner=request.user, is_deleted=True).order_by('-deleted_at', 'name')
         return Response({
             'agents': [
                 serialize_local_agent(request),
                 *AgentSerializer(registered_agents, many=True).data,
             ],
+            'deleted_agents': AgentSerializer(deleted_agents, many=True).data,
         })
 
     if not user_has_operation(request.user, 'create_agent'):
@@ -3466,6 +3471,8 @@ def agents(request):
             return Response({
                 'error': 'Agent not found.',
             }, status=status.HTTP_404_NOT_FOUND)
+
+        agent_was_deleted = agent.is_deleted
 
         agent_secret = decode_agent_secret(getattr(agent, 'password_secret', ''))
         if not agent_secret:
@@ -3486,6 +3493,10 @@ def agents(request):
                     'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
                 }, status=status.HTTP_400_BAD_REQUEST)
             output = '\n'.join([image_result.get('output', ''), build_manual_agent_install_output(agent, agent_secret, request)]).strip()
+            if agent_was_deleted:
+                agent.is_deleted = False
+                agent.deleted_at = None
+                agent.save(update_fields=['is_deleted', 'deleted_at', 'updated_at'])
             return Response({
                 'success': True,
                 'created': False,
@@ -3532,6 +3543,11 @@ def agents(request):
                 'error': result.get('error') or 'Unable to redeploy the agent on the selected server.',
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        if agent_was_deleted:
+            agent.is_deleted = False
+            agent.deleted_at = None
+            agent.save(update_fields=['is_deleted', 'deleted_at', 'updated_at'])
+
         return Response({
             'success': True,
             'created': False,
@@ -3550,7 +3566,7 @@ def agents(request):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            agent = Agent.objects.get(owner=request.user, id=agent_id)
+            agent = Agent.objects.get(owner=request.user, id=agent_id, is_deleted=False)
         except Agent.DoesNotExist:
             return Response({
                 'error': 'Agent not found.',
@@ -3623,10 +3639,21 @@ def agents(request):
                 'error': 'Unable to delete the agent from the selected server.',
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        agent.delete()
+        agent.connected = False
+        agent.hostname = ''
+        agent.containers_count = 0
+        agent.images_count = 0
+        agent.networks_count = 0
+        agent.volumes_count = 0
+        agent.is_deleted = True
+        agent.deleted_at = timezone.now()
+        agent.save(update_fields=[
+            'connected', 'hostname', 'containers_count', 'images_count',
+            'networks_count', 'volumes_count', 'is_deleted', 'deleted_at', 'updated_at',
+        ])
         return Response({
             'success': True,
-            'agent': agent_data,
+            'agent': AgentSerializer(agent).data,
             'command': result['command'],
             'output': result['output'] or f'Agent {agent_data["name"]} deleted.',
             'remote_cleanup_skipped': remote_cleanup_skipped,
@@ -3663,6 +3690,8 @@ def agents(request):
             'password_secret': existing_agent.password_secret,
             'connected': existing_agent.connected,
             'hostname': existing_agent.hostname,
+            'is_deleted': existing_agent.is_deleted,
+            'deleted_at': existing_agent.deleted_at,
         }
 
     temporary_secret = uuid.uuid4().hex + uuid.uuid4().hex
@@ -3680,6 +3709,8 @@ def agents(request):
             'password_hash': make_password(temporary_secret),
             'password_secret': encode_agent_secret(temporary_secret),
             'connected': False,
+            'is_deleted': False,
+            'deleted_at': None,
             'hostname': '',
         },
     )
@@ -3733,7 +3764,7 @@ def agent_image(request):
         return Response({'error': 'Invalid agent image token.'}, status=status.HTTP_403_FORBIDDEN)
 
     try:
-        agent = Agent.objects.get(id=payload.get('agent_id'), owner_id=payload.get('owner_id'))
+        agent = Agent.objects.get(id=payload.get('agent_id'), owner_id=payload.get('owner_id'), is_deleted=False)
     except Agent.DoesNotExist:
         return Response({'error': 'Agent was not found for this token.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -3769,7 +3800,7 @@ def agent_heartbeat(request):
             'error': 'Agent name and password are required.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    agent_query = Agent.objects.filter(id=agent_id) if agent_id else Agent.objects.filter(name=name)
+    agent_query = Agent.objects.filter(id=agent_id, is_deleted=False) if agent_id else Agent.objects.filter(name=name, is_deleted=False)
     agent = agent_query.first()
     if not agent or not check_password(password, agent.password_hash):
         return Response({
@@ -3971,7 +4002,7 @@ def registry_deploy(request):
         return Response({'success': False, 'error': 'Select a connected agent for registry deployment.'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        agent = Agent.objects.get(owner=request.user, id=agent_id)
+        agent = Agent.objects.get(owner=request.user, id=agent_id, is_deleted=False)
     except (Agent.DoesNotExist, ValueError):
         return Response({'success': False, 'error': 'Selected agent was not found.'}, status=status.HTTP_404_NOT_FOUND)
     if not agent.connected:
@@ -4192,6 +4223,47 @@ def get_recycle_source_fields(agent):
     }
 
 
+def build_recycled_container_snapshot_image(container_data, container_id=''):
+    config = container_data.get('Config') or {}
+    original_image = str(config.get('Image') or container_data.get('Image') or '').strip()
+    repository = original_image
+    original_tag = 'latest'
+
+    if '@' in repository:
+        repository = repository.split('@', 1)[0]
+        original_tag = 'digest'
+    else:
+        last_slash = repository.rfind('/')
+        last_colon = repository.rfind(':')
+        if last_colon > last_slash:
+            repository, original_tag = repository[:last_colon], repository[last_colon + 1:]
+
+    container_name = normalize_container_inspect_name(container_data, container_id).lower()
+    safe_container_name = (re.sub(r'[^a-z0-9_.-]+', '-', container_name).strip('-_.') or 'container')[:48]
+    safe_original_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', original_tag).strip('-_.') or 'latest'
+    if not repository or repository.startswith('sha256'):
+        repository = f'recycled-container/{safe_container_name}'
+
+    timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
+    unique_id = str(container_data.get('Id') or container_id or uuid.uuid4().hex).replace('sha256:', '')[:12]
+    suffix = f'-recycle-{safe_container_name}-{timestamp}-{unique_id}'
+    max_original_tag_length = max(1, 128 - len(suffix))
+    snapshot_tag = safe_original_tag[:max_original_tag_length].rstrip('-_.') + suffix
+    return f'{repository}:{snapshot_tag}'
+
+
+def set_recycled_container_snapshot(container_data, snapshot_image):
+    container_data[RECYCLED_CONTAINER_SNAPSHOT_KEY] = {
+        'image': snapshot_image,
+        'created_at': timezone.now().isoformat(),
+    }
+
+
+def get_recycled_container_snapshot_image(inspect_data):
+    metadata = (inspect_data or {}).get(RECYCLED_CONTAINER_SNAPSHOT_KEY) or {}
+    return str(metadata.get('image') or '').strip()
+
+
 def create_recycled_container_record(request, agent, container_id, container_data):
     container_name = normalize_container_inspect_name(container_data, container_id)
     config = container_data.get('Config') or {}
@@ -4255,13 +4327,27 @@ def get_recycled_network_names(inspect_data):
     return [network for network in networks if network and network != 'none']
 
 
-def build_recycled_container_restore_script(record):
+def normalize_restore_image_name(value, fallback=''):
+    image = str(value or fallback or '').strip()
+    if not image:
+        raise ValueError('Enter a Docker image name for the restored container.')
+    if len(image) > 512 or image.startswith('-') or '@' in image or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', image):
+        raise ValueError('Enter a valid Docker image name, for example nginx:latest.')
+    if image.rfind(':') <= image.rfind('/'):
+        image += ':latest'
+    return image
+
+
+def build_recycled_container_restore_script(record, restore_image=''):
     inspect_data = record.inspect_data or {}
     config = inspect_data.get('Config') or {}
     host_config = inspect_data.get('HostConfig') or {}
-    image = str(config.get('Image') or record.image or '').strip()
+    snapshot_image = get_recycled_container_snapshot_image(inspect_data)
+    original_image = str(config.get('Image') or record.image or '').strip()
+    source_image = snapshot_image or original_image
+    target_image = normalize_restore_image_name(restore_image, original_image)
     name = normalize_container_inspect_name(inspect_data, record.container_name)
-    if not image:
+    if not source_image:
         raise ValueError('Deleted container image is missing, so it cannot be restored.')
 
     command = ['docker', 'run', '-d', '--name', name]
@@ -4299,19 +4385,35 @@ def build_recycled_container_restore_script(record):
     append_recycled_port_args(command, inspect_data)
     append_recycled_volume_args(command, inspect_data)
 
-    command.append(image)
+    command.append(target_image)
     for arg in config.get('Cmd') or []:
         if str(arg).strip():
             command.append(str(arg))
 
-    script_lines = [
-        'set -e',
-        shlex.join(['docker', 'image', 'inspect', image]) + ' >/dev/null 2>&1 || ' + shlex.join(['docker', 'pull', image]),
-        shlex.join(command),
-    ]
+    if snapshot_image:
+        image_prepare_command = (
+            shlex.join(['docker', 'image', 'inspect', snapshot_image])
+            + ' >/dev/null 2>&1 || { echo '
+            + shlex.quote('The preserved container snapshot is missing on this server. Restore cannot continue without its saved data.')
+            + '; exit 1; }'
+        )
+    else:
+        image_prepare_command = (
+            shlex.join(['docker', 'image', 'inspect', source_image])
+            + ' >/dev/null 2>&1 || '
+            + shlex.join(['docker', 'pull', source_image])
+        )
+
+    script_lines = ['set -e', image_prepare_command]
+    if source_image != target_image:
+        script_lines.append(shlex.join(['docker', 'image', 'tag', source_image, target_image]))
+    script_lines.append(shlex.join(command))
     extra_networks = [network for network in networks if network != primary_network]
     for network in extra_networks:
         script_lines.append(shlex.join(['docker', 'network', 'connect', network, name]) + ' || true')
+    if snapshot_image and snapshot_image != target_image:
+        script_lines.append(shlex.join(['docker', 'image', 'rm', '-f', snapshot_image]))
+    script_lines.append('echo ' + shlex.quote(f'Restored container image: {target_image}'))
     return '\n'.join(script_lines)
 
 
@@ -4324,51 +4426,98 @@ def selected_server_matches_recycled_record(server_id, record):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def container_action(request):
-    """Stop, restart, or start a container."""
+    """Stop, restart, start, or safely recycle a container."""
     container_id = request.data.get('id', '').strip()
     action = request.data.get('action', '').strip().lower()
     if action == 'delete' and not user_has_operation(request.user, 'delete_container'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
-    
+
     if not container_id:
         return Response({
             'error': 'Container ID is required.',
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
     if action not in ['stop', 'restart', 'start', 'delete']:
         return Response({
             'error': f'Invalid action. Must be one of: stop, restart, start, delete.',
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
     agent, password, remote_agent, error_response = get_docker_target_context(request)
     if error_response:
         return error_response
 
-    recycled_record = None
-    container_data = None
-    if action == 'delete':
-        inspect_result = run_target_docker_command(agent, password, remote_agent, [
-            'docker', 'inspect', container_id,
-            '--format', '{{json .}}',
-        ], timeout=30)
-        if inspect_result['success']:
-            try:
-                container_data = json.loads(inspect_result['output'].splitlines()[0])
-            except (json.JSONDecodeError, IndexError):
-                container_data = None
+    if action != 'delete':
+        result = run_target_docker_command(agent, password, remote_agent, ['docker', action, container_id])
+        return Response(result, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
 
-    command = ['docker', 'rm', '-f', container_id] if action == 'delete' else ['docker', action, container_id]
-    result = run_target_docker_command(agent, password, remote_agent, command)
-    if action == 'delete' and result['success'] and container_data:
+    inspect_result = run_target_docker_command(agent, password, remote_agent, [
+        'docker', 'inspect', container_id,
+        '--format', '{{json .}}',
+    ], timeout=30)
+    if not inspect_result['success']:
+        return Response({
+            **inspect_result,
+            'success': False,
+            'error': 'Unable to inspect the container. It was not deleted because its data could not be preserved.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        container_data = json.loads(inspect_result['output'].splitlines()[0])
+    except (json.JSONDecodeError, IndexError):
+        return Response({
+            'success': False,
+            'error': 'Docker returned invalid container details. The container was not deleted because its data could not be preserved.',
+            'output': inspect_result.get('output', ''),
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    snapshot_image = build_recycled_container_snapshot_image(container_data, container_id)
+    snapshot_result = run_target_docker_command(
+        agent, password, remote_agent,
+        ['docker', 'commit', container_id, snapshot_image],
+        timeout=900,
+    )
+    if not snapshot_result['success']:
+        return Response({
+            **snapshot_result,
+            'success': False,
+            'error': 'Unable to preserve the container filesystem. The container was not deleted.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    set_recycled_container_snapshot(container_data, snapshot_image)
+    try:
         recycled_record = create_recycled_container_record(request, agent, container_id, container_data)
-        result = {
-            **result,
-            'recycled_container': RecycledContainerSerializer(recycled_record).data,
-        }
-    return Response(result, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        run_target_docker_command(agent, password, remote_agent, ['docker', 'image', 'rm', '-f', snapshot_image], timeout=120)
+        return Response({
+            'success': False,
+            'error': 'Unable to save the container recycle-bin record. The original container was not deleted.',
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    result = run_target_docker_command(agent, password, remote_agent, ['docker', 'rm', '-f', container_id])
+    if not result['success']:
+        recycled_record.delete()
+        cleanup_result = run_target_docker_command(
+            agent, password, remote_agent,
+            ['docker', 'image', 'rm', '-f', snapshot_image],
+            timeout=120,
+        )
+        cleanup_output = cleanup_result.get('output', '').strip()
+        if cleanup_output:
+            result['output'] = '\n'.join(filter(None, [result.get('output', '').strip(), cleanup_output]))
+        return Response(result, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        **result,
+        'output': '\n'.join(filter(None, [
+            snapshot_result.get('output', '').strip(),
+            result.get('output', '').strip(),
+            'Container filesystem and mounted data references were preserved for restore.',
+        ])),
+        'recycled_container': RecycledContainerSerializer(recycled_record).data,
+    }, status=status.HTTP_200_OK)
 
 
-@api_view(['GET', 'POST'])
+@api_view(['GET', 'POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def container_recycle_bin(request):
     if request.method == 'GET':
@@ -4376,6 +4525,47 @@ def container_recycle_bin(request):
         return Response({
             'success': True,
             'containers': RecycledContainerSerializer(records, many=True).data,
+        })
+
+    if request.method == 'DELETE':
+        if not user_has_operation(request.user, 'delete_container'):
+            return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+        record_id = request.data.get('id') or request.data.get('recycle_id')
+        try:
+            record = RecycledContainer.objects.get(owner=request.user, id=record_id, restored=False)
+        except (RecycledContainer.DoesNotExist, ValueError):
+            return Response({'success': False, 'error': 'Recycle bin container was not found.'}, status=status.HTTP_404_NOT_FOUND)
+        container_name = record.container_name
+        snapshot_image = get_recycled_container_snapshot_image(record.inspect_data)
+        if snapshot_image:
+            selected_server_id = str(request.data.get('server_id') or 'local').strip() or 'local'
+            if not selected_server_matches_recycled_record(selected_server_id, record):
+                return Response({
+                    'success': False,
+                    'error': f'Please select {record.source_label}, the server holding this container snapshot, before deleting it permanently.',
+                    'expected_server_id': record.target_server_id or record.agent_id or 'local',
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            agent, password, remote_agent, error_response = get_docker_target_context(request)
+            if error_response:
+                return error_response
+            cleanup_result = run_target_docker_command(
+                agent, password, remote_agent,
+                ['docker', 'image', 'rm', '-f', snapshot_image],
+                timeout=120,
+            )
+            if not cleanup_result['success']:
+                return Response({
+                    **cleanup_result,
+                    'success': False,
+                    'error': 'Unable to remove the preserved container snapshot. The recycle-bin record was kept so its data is not orphaned.',
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        record.delete()
+        return Response({
+            'success': True,
+            'container_name': container_name,
+            'output': f'Container {container_name} and its preserved snapshot were permanently deleted from the recycle bin.',
         })
 
     if not user_has_operation(request.user, 'create_container'):
@@ -4400,7 +4590,8 @@ def container_recycle_bin(request):
         return error_response
 
     try:
-        restore_script = build_recycled_container_restore_script(record)
+        restore_image = normalize_restore_image_name(request.data.get('image'), record.image)
+        restore_script = build_recycled_container_restore_script(record, restore_image)
     except ValueError as exc:
         return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -4408,10 +4599,12 @@ def container_recycle_bin(request):
     if result['success']:
         record.restored = True
         record.restored_at = timezone.now()
+        record.image = restore_image
     record.restore_output = result.get('output', '')
-    record.save(update_fields=['restored', 'restored_at', 'restore_output', 'updated_at'])
+    record.save(update_fields=['image', 'restored', 'restored_at', 'restore_output', 'updated_at'])
     return Response({
         **result,
+        'restored_image': restore_image,
         'container': RecycledContainerSerializer(record).data,
     }, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
 
@@ -5197,7 +5390,7 @@ def deployments(request):
     local_target = not server_id or str(server_id) == 'local'
     if not local_target:
         try:
-            target_agent = Agent.objects.get(owner=request.user, id=server_id)
+            target_agent = Agent.objects.get(owner=request.user, id=server_id, is_deleted=False)
         except (Agent.DoesNotExist, ValueError):
             return Response({'error': 'Target server agent not found.'}, status=status.HTTP_404_NOT_FOUND)
         if not target_agent.connected:

@@ -79,6 +79,8 @@ class Agent(models.Model):
     password_hash = models.CharField(max_length=256)
     password_secret = models.TextField(blank=True)
     connected = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True)
     hostname = models.CharField(max_length=255, blank=True)
     containers_count = models.PositiveIntegerField(default=0)

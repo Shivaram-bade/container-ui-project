@@ -323,8 +323,15 @@ export default function Home() {
   const [recycledContainersError, setRecycledContainersError] = useState('');
   const [restoreContainerTarget, setRestoreContainerTarget] = useState(null);
   const [restoreContainerServerId, setRestoreContainerServerId] = useState('');
+  const [restoreContainerImage, setRestoreContainerImage] = useState('');
   const [restoreContainerLoading, setRestoreContainerLoading] = useState(false);
   const [restoreContainerMessage, setRestoreContainerMessage] = useState('');
+  const [containerInspectOutputOpen, setContainerInspectOutputOpen] = useState(false);
+  const [containerInspectOutput, setContainerInspectOutput] = useState('');
+  const [containerInspectTitle, setContainerInspectTitle] = useState('Container inspect');
+  const [deleteRecycledContainerTarget, setDeleteRecycledContainerTarget] = useState(null);
+  const [deleteRecycledContainerLoading, setDeleteRecycledContainerLoading] = useState(false);
+  const [deleteRecycledContainerMessage, setDeleteRecycledContainerMessage] = useState('');
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [connectModalPosition, setConnectModalPosition] = useState({ x: 100, y: 100 });
   const [connectModalDrag, setConnectModalDrag] = useState(null);
@@ -451,6 +458,7 @@ export default function Home() {
   const [agentPort, setAgentPort] = useState('19541');
   const [agentTab, setAgentTab] = useState('create');
   const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedDeletedAgentId, setSelectedDeletedAgentId] = useState('');
   const [agentDeleteLoading, setAgentDeleteLoading] = useState(false);
   const [agentRedeployLoading, setAgentRedeployLoading] = useState(false);
   const [agentLoading, setAgentLoading] = useState(false);
@@ -460,6 +468,7 @@ export default function Home() {
   const [agentCreateOutputOpen, setAgentCreateOutputOpen] = useState(false);
   const [agentDeleteOutputOpen, setAgentDeleteOutputOpen] = useState(false);
   const [agents, setAgents] = useState([]);
+  const [deletedAgents, setDeletedAgents] = useState([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [agentsError, setAgentsError] = useState('');
   const [rbacTab, setRbacTab] = useState('user');
@@ -610,9 +619,11 @@ export default function Home() {
     try {
       const response = await authService.listAgents();
       setAgents(response.data.agents || []);
+      setDeletedAgents(response.data.deleted_agents || []);
     } catch (error) {
       const data = error.response?.data;
       setAgents([]);
+      setDeletedAgents([]);
       setAgentsError(data?.error || data?.detail || 'Unable to load connected agents.');
     } finally {
       setAgentsLoading(false);
@@ -789,10 +800,11 @@ export default function Home() {
       setAgentDeleteOutput(outputLines.join('\n'));
       setAgentMessage(
         response.data.remote_cleanup_skipped
-          ? 'Agent removed from this app. Run the manual cleanup command shown below on the target server.'
-          : 'Agent deleted from the selected server.'
+          ? 'Agent moved to deleted agents. Run the manual cleanup command shown below on the target server.'
+          : 'Agent deleted from the selected server and moved to deleted agents.'
       );
       setSelectedAgentId('');
+      setSelectedDeletedAgentId(response.data.agent?.id ? String(response.data.agent.id) : '');
       await loadAgents();
     } catch (error) {
       const data = error.response?.data;
@@ -825,6 +837,7 @@ export default function Home() {
       ].filter(Boolean);
       setAgentDeleteOutput(outputLines.join('\n'));
       setAgentMessage('Agent redeploy started on the selected server.');
+      setSelectedDeletedAgentId('');
       await loadAgents();
     } catch (error) {
       const data = error.response?.data;
@@ -1054,6 +1067,7 @@ export default function Home() {
       loadNetworks(serverId);
       loadVolumes(serverId);
       loadDeployments();
+      loadRecycledContainers();
     };
 
     loadDashboardData();
@@ -1208,7 +1222,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (isContainerActive && (containerTab === 'existing' || containerTab === 'stopped')) {
+    if (isContainerActive && (containerTab === 'existing' || containerTab === 'stopped' || containerTab === 'recyclebin')) {
       loadContainers(getSelectedDockerServerId());
       loadNetworks(getSelectedDockerServerId());
       loadVolumes(getSelectedDockerServerId());
@@ -1277,13 +1291,15 @@ export default function Home() {
     const expectedServerId = String(container.agent_id || 'local');
     setRestoreContainerTarget(container);
     setRestoreContainerServerId(expectedServerId === 'local' ? '' : expectedServerId);
-    setRestoreContainerMessage(`Restoring ${container.container_name}. Please select ${container.source_label}, the agent server this container was deleted from.`);
+    setRestoreContainerImage(container.image || '');
+    setRestoreContainerMessage(`Restoring ${container.container_name}. Choose the original agent and the Docker image name for the restored container.`);
   };
 
   const handleCancelRestoreContainer = () => {
     if (restoreContainerLoading) return;
     setRestoreContainerTarget(null);
     setRestoreContainerServerId('');
+    setRestoreContainerImage('');
     setRestoreContainerMessage('');
   };
 
@@ -1294,7 +1310,8 @@ export default function Home() {
     try {
       const response = await authService.restoreRecycledContainer(
         restoreContainerTarget.id,
-        restoreContainerServerId || LOCAL_SERVER_ID
+        restoreContainerServerId || LOCAL_SERVER_ID,
+        restoreContainerImage.trim()
       );
       setRestoreContainerMessage(response.data?.output || `Container ${restoreContainerTarget.container_name} restored successfully.`);
       await loadRecycledContainers();
@@ -1305,6 +1322,7 @@ export default function Home() {
       window.setTimeout(() => {
         setRestoreContainerTarget(null);
         setRestoreContainerServerId('');
+        setRestoreContainerImage('');
         setRestoreContainerMessage('');
       }, 1400);
     } catch (error) {
@@ -1312,6 +1330,37 @@ export default function Home() {
       setRestoreContainerMessage(data?.error || data?.output || 'Unable to restore container.');
     } finally {
       setRestoreContainerLoading(false);
+    }
+  };
+
+  const handleOpenDeleteRecycledContainer = (container) => {
+    setDeleteRecycledContainerTarget(container);
+    setDeleteRecycledContainerMessage('');
+  };
+
+  const handleCancelDeleteRecycledContainer = () => {
+    if (deleteRecycledContainerLoading) return;
+    setDeleteRecycledContainerTarget(null);
+    setDeleteRecycledContainerMessage('');
+  };
+
+  const handleConfirmDeleteRecycledContainer = async () => {
+    if (!deleteRecycledContainerTarget) return;
+    setDeleteRecycledContainerLoading(true);
+    setDeleteRecycledContainerMessage(`Deleting ${deleteRecycledContainerTarget.container_name} from the recycle bin...`);
+    try {
+      await authService.deleteRecycledContainer(
+        deleteRecycledContainerTarget.id,
+        deleteRecycledContainerTarget.target_server_id || deleteRecycledContainerTarget.agent_id || LOCAL_SERVER_ID
+      );
+      await loadRecycledContainers();
+      setDeleteRecycledContainerTarget(null);
+      setDeleteRecycledContainerMessage('');
+    } catch (error) {
+      const data = error.response?.data;
+      setDeleteRecycledContainerMessage(data?.error || 'Unable to delete the container from the recycle bin.');
+    } finally {
+      setDeleteRecycledContainerLoading(false);
     }
   };
 
@@ -1338,6 +1387,16 @@ export default function Home() {
     loadContainerLogs(containerId, getSelectedDockerServerId(), name + ' logs');
   };
 
+
+  const handleContainerInspect = () => {
+    if (!selectedContainerDetail) return;
+    const containerId = selectedContainer.ID || selectedContainer.Id || selectedContainer.id;
+    const name = selectedContainer.Names?.[0]?.replace(/^[/]/, '') || containerId;
+    setContainerInspectTitle(`${name} inspect`);
+    setContainerInspectOutput(JSON.stringify(selectedContainerDetail, null, 2));
+    setContainerInspectOutputOpen(true);
+  };
+
   const handleDashboardNavigate = (target) => {
     if (target === 'running') {
       setContainerServerId(dashboardServerId);
@@ -1348,6 +1407,12 @@ export default function Home() {
     if (target === 'stopped') {
       setContainerServerId(dashboardServerId);
       setContainerTab('stopped');
+      handleActionSelect(manualActions[0]);
+      return;
+    }
+    if (target === 'deleted') {
+      setContainerServerId(dashboardServerId);
+      setContainerTab('recyclebin');
       handleActionSelect(manualActions[0]);
       return;
     }
@@ -1381,6 +1446,30 @@ export default function Home() {
     }
     if (target === 'server-health') {
       handleActionSelect(serverInfoAction);
+    }
+  };
+
+  const handleContainerResourceNavigate = (target) => {
+    if (target === 'running') {
+      setContainerTab('existing');
+      return;
+    }
+    if (target === 'stopped') {
+      setContainerTab('stopped');
+      return;
+    }
+    if (target === 'deleted') {
+      setContainerTab('recyclebin');
+      return;
+    }
+    if (target === 'networks') {
+      setNetworkTab('delete');
+      handleActionSelect(manualActions[2]);
+      return;
+    }
+    if (target === 'volumes') {
+      setVolumeTab('delete');
+      handleActionSelect(manualActions[3]);
     }
   };
 
@@ -1926,31 +2015,32 @@ export default function Home() {
     }
   };
 
+  const modalDragStartsOnControl = (event) => Boolean(
+    event.target.closest('button, input, select, textarea, a, label, [data-no-modal-drag]')
+  );
+
   const handleConnectModalDragStart = (event) => {
-    if (event.target.closest('.draggable')) {
-      setConnectModalDrag({
-        startX: event.clientX - connectModalPosition.x,
-        startY: event.clientY - connectModalPosition.y,
-      });
-    }
+    if (modalDragStartsOnControl(event)) return;
+    setConnectModalDrag({
+      startX: event.clientX - connectModalPosition.x,
+      startY: event.clientY - connectModalPosition.y,
+    });
   };
 
   const handleVolumeConnectModalDragStart = (event) => {
-    if (event.target.closest('.draggable')) {
-      setVolumeConnectModalDrag({
-        startX: event.clientX - volumeConnectModalPosition.x,
-        startY: event.clientY - volumeConnectModalPosition.y,
-      });
-    }
+    if (modalDragStartsOnControl(event)) return;
+    setVolumeConnectModalDrag({
+      startX: event.clientX - volumeConnectModalPosition.x,
+      startY: event.clientY - volumeConnectModalPosition.y,
+    });
   };
 
   const handleVolumeGuiModalDragStart = (event) => {
-    if (event.target.closest('.draggable')) {
-      setVolumeGuiModalDrag({
-        startX: event.clientX - volumeGuiModalPosition.x,
-        startY: event.clientY - volumeGuiModalPosition.y,
-      });
-    }
+    if (modalDragStartsOnControl(event)) return;
+    setVolumeGuiModalDrag({
+      startX: event.clientX - volumeGuiModalPosition.x,
+      startY: event.clientY - volumeGuiModalPosition.y,
+    });
   };
 
   useEffect(() => {
@@ -2283,6 +2373,7 @@ export default function Home() {
   };
 
   const handleOutputModalDragStart = (event) => {
+    if (modalDragStartsOnControl(event)) return;
     setOutputModalDrag({
       startX: event.clientX,
       startY: event.clientY,
@@ -2907,6 +2998,9 @@ export default function Home() {
             volumesError={volumesError}
             deployments={deployments}
             deploymentsLoading={deploymentsLoading}
+            recycledContainers={recycledContainers}
+            recycledContainersLoading={recycledContainersLoading}
+            recycledContainersError={recycledContainersError}
             onRefresh={() => {
               const serverId = dashboardServerId || LOCAL_SERVER_ID;
               loadAgents();
@@ -2915,6 +3009,7 @@ export default function Home() {
               loadNetworks(serverId);
               loadVolumes(serverId);
               loadDeployments();
+              loadRecycledContainers();
             }}
             onOpenResource={handleDashboardNavigate}
           />
@@ -2982,14 +3077,17 @@ export default function Home() {
             agentDeleteOutputOpen={agentDeleteOutputOpen}
             outputModalPosition={outputModalPosition}
             agents={agents}
+            deletedAgents={deletedAgents}
             agentsLoading={agentsLoading}
             agentsError={agentsError}
             selectedAgentId={selectedAgentId}
+            selectedDeletedAgentId={selectedDeletedAgentId}
             onAgentNameChange={setAgentName}
             onAgentServerIpChange={setAgentServerIp}
             onAgentPortChange={setAgentPort}
             onAgentTabChange={setAgentTab}
             onSelectedAgentChange={setSelectedAgentId}
+            onSelectedDeletedAgentChange={setSelectedDeletedAgentId}
             onCreateAgent={handleCreateAgent}
             onDeleteAgent={handleDeleteAgent}
             onRedeployAgent={handleRedeployAgent}
@@ -3034,8 +3132,12 @@ export default function Home() {
             recycledContainersError={recycledContainersError}
             restoreContainerTarget={restoreContainerTarget}
             restoreContainerServerId={restoreContainerServerId}
+            restoreContainerImage={restoreContainerImage}
             restoreContainerLoading={restoreContainerLoading}
             restoreContainerMessage={restoreContainerMessage}
+            deleteRecycledContainerTarget={deleteRecycledContainerTarget}
+            deleteRecycledContainerLoading={deleteRecycledContainerLoading}
+            deleteRecycledContainerMessage={deleteRecycledContainerMessage}
             selectedContainer={selectedContainer}
             selectedContainerDetail={selectedContainerDetail}
             containerDetailLoading={containerDetailLoading}
@@ -3044,6 +3146,9 @@ export default function Home() {
             containerLogOutput={containerLogOutput}
             containerLogTitle={containerLogTitle}
             containerLogOutputOpen={containerLogOutputOpen}
+            containerInspectOutputOpen={containerInspectOutputOpen}
+            containerInspectOutput={containerInspectOutput}
+            containerInspectTitle={containerInspectTitle}
             connectModalOpen={connectModalOpen}
             connectModalPosition={connectModalPosition}
             volumeConnectModalPosition={volumeConnectModalPosition}
@@ -3102,8 +3207,15 @@ export default function Home() {
             onConfirmRestoreContainer={handleConfirmRestoreContainer}
             onCancelRestoreContainer={handleCancelRestoreContainer}
             onRestoreContainerServerIdChange={setRestoreContainerServerId}
+            onRestoreContainerImageChange={setRestoreContainerImage}
             onRefreshRecycleBin={loadRecycledContainers}
+            onOpenDeleteRecycledContainer={handleOpenDeleteRecycledContainer}
+            onConfirmDeleteRecycledContainer={handleConfirmDeleteRecycledContainer}
+            onCancelDeleteRecycledContainer={handleCancelDeleteRecycledContainer}
+            onOpenResource={handleContainerResourceNavigate}
             onContainerLogs={handleContainerLogs}
+            onContainerInspect={handleContainerInspect}
+            onCloseContainerInspect={() => setContainerInspectOutputOpen(false)}
             onCloseContainerLogOutput={() => {
               setContainerLogOutputOpen(false);
               setContainerLogTarget(null);
@@ -3384,6 +3496,9 @@ function DashboardPanel({
   volumesError,
   deployments,
   deploymentsLoading,
+  recycledContainers,
+  recycledContainersLoading,
+  recycledContainersError,
   onRefresh,
   onOpenResource,
 }) {
@@ -3393,11 +3508,14 @@ function DashboardPanel({
   const stoppedContainers = containers.filter((container) => !isContainerRunning(container));
   const connectedAgents = agents.filter((agent) => agent.id !== LOCAL_SERVER_ID && agent.connected);
   const totalManagedServers = Math.max(ensureLocalServerOption(agents).length, 1);
-  const loading = containersLoading || imagesLoading || networksLoading || volumesLoading || deploymentsLoading || agentsLoading;
-  const errors = [containersError, imagesError, networksError, volumesError].filter(Boolean);
+  const selectedServerId = String(dashboardServerId || LOCAL_SERVER_ID);
+  const deletedContainers = recycledContainers.filter((container) => String(container.target_server_id || container.agent_id || LOCAL_SERVER_ID) === selectedServerId);
+  const loading = containersLoading || imagesLoading || networksLoading || volumesLoading || deploymentsLoading || agentsLoading || recycledContainersLoading;
+  const errors = [containersError, imagesError, networksError, volumesError, recycledContainersError].filter(Boolean);
   const cards = [
     { key: 'running', title: 'Running Containers', value: runningContainers.length, meta: 'Active workloads', visual: 'containers' },
     { key: 'stopped', title: 'Stopped containers', value: stoppedContainers.length, meta: 'Ready to start', visual: 'stopped' },
+    { key: 'deleted', title: 'Deleted Containers', value: deletedContainers.length, meta: 'Recycle bin', visual: 'deleted' },
     { key: 'agents', title: 'Connected Agents', value: connectedAgents.length, meta: `${totalManagedServers} managed server(s)`, visual: 'agents' },
     { key: 'server-health', title: 'Server Health', value: getAgentStatus(selectedServer).label, meta: selectedServer?.hostname || selectedServer?.server_ip || 'Application server', visual: 'health' },
     { key: 'volumes', title: 'Volumes', value: volumes.length, meta: 'Persistent storage', visual: 'volumes' },
@@ -3480,6 +3598,14 @@ function DashboardVisual({ type }) {
         <span className="dv-container inactive c-a" />
         <span className="dv-container inactive c-b" />
         <span className="dv-sleep-line line-a" />
+        <span className="dv-sleep-line line-b" />
+      </>
+    ),
+    deleted: (
+      <>
+        <span className="dv-container inactive c-a" />
+        <span className="dv-container inactive c-b" />
+        <span className="dv-delete-bin" />
         <span className="dv-sleep-line line-b" />
       </>
     ),
@@ -3664,8 +3790,12 @@ function CreateContainerPanel({
   recycledContainersError,
   restoreContainerTarget,
   restoreContainerServerId,
+  restoreContainerImage,
   restoreContainerLoading,
   restoreContainerMessage,
+  deleteRecycledContainerTarget,
+  deleteRecycledContainerLoading,
+  deleteRecycledContainerMessage,
   selectedContainer,
   selectedContainerDetail,
   containerDetailLoading,
@@ -3674,6 +3804,9 @@ function CreateContainerPanel({
   containerLogOutput,
   containerLogTitle,
   containerLogOutputOpen,
+  containerInspectOutputOpen,
+  containerInspectOutput,
+  containerInspectTitle,
   connectModalOpen,
   connectModalPosition,
   volumeConnectModalPosition,
@@ -3732,8 +3865,15 @@ function CreateContainerPanel({
   onConfirmRestoreContainer,
   onCancelRestoreContainer,
   onRestoreContainerServerIdChange,
+  onRestoreContainerImageChange,
   onRefreshRecycleBin,
+  onOpenDeleteRecycledContainer,
+  onConfirmDeleteRecycledContainer,
+  onCancelDeleteRecycledContainer,
+  onOpenResource,
   onContainerLogs,
+  onContainerInspect,
+  onCloseContainerInspect,
   onConnectVolume,
   onConnectVolumeGui,
   onCloseContainerLogOutput,
@@ -3789,6 +3929,10 @@ function CreateContainerPanel({
   const canDeleteNetwork = canOperate('delete_network');
   const runningContainers = containers.filter(isContainerRunning);
   const stoppedContainers = containers.filter((container) => !isContainerRunning(container));
+  const selectedServerId = String(containerServerId || LOCAL_SERVER_ID);
+  const selectedServerRecycledContainers = recycledContainers.filter(
+    (container) => String(container.target_server_id || container.agent_id || LOCAL_SERVER_ID) === selectedServerId
+  );
   const displayedContainers = containerTab === 'stopped' ? stoppedContainers : runningContainers;
   const selectedIsRunning = selectedContainer ? isContainerRunning(selectedContainer) : false;
   const selectedContainerPortLabels = selectedContainerDetail ? getDeploymentContainerPortLabels(selectedContainerDetail) : [];
@@ -3848,6 +3992,7 @@ function CreateContainerPanel({
           aria-selected={containerTab === 'existing'}
           className={containerTab === 'existing' ? 'active' : ''}
           onClick={() => onContainerTabChange('existing')}
+          disabled={containerTab === 'existing'}
         >
           Running containers
         </button>
@@ -3857,6 +4002,7 @@ function CreateContainerPanel({
           aria-selected={containerTab === 'stopped'}
           className={containerTab === 'stopped' ? 'active' : ''}
           onClick={() => onContainerTabChange('stopped')}
+          disabled={containerTab === 'stopped'}
         >
           Stopped containers
         </button>
@@ -3866,6 +4012,7 @@ function CreateContainerPanel({
           aria-selected={containerTab === 'recyclebin'}
           className={containerTab === 'recyclebin' ? 'active' : ''}
           onClick={() => onContainerTabChange('recyclebin')}
+          disabled={containerTab === 'recyclebin'}
         >
           Container recycle bin
         </button>
@@ -4134,23 +4281,42 @@ function CreateContainerPanel({
           {selectedTargetServerDown ? (
             <p className="container-message error">{targetServerUnavailableMessage}</p>
           ) : (
-            <div className="resource-dashboard compact">
-              <article className="resource-stat-card">
+            <div className="resource-dashboard compact container-resource-shortcuts">
+              <button
+                type="button"
+                className="resource-stat-card resource-stat-button"
+                onClick={() => onOpenResource('running')}
+                disabled={containerTab === 'existing'}
+              >
                 <span>Running</span>
                 <strong>{runningContainers.length}</strong>
-              </article>
-              <article className="resource-stat-card">
+              </button>
+              <button
+                type="button"
+                className="resource-stat-card resource-stat-button"
+                onClick={() => onOpenResource('stopped')}
+                disabled={containerTab === 'stopped'}
+              >
                 <span>Stopped</span>
                 <strong>{stoppedContainers.length}</strong>
-              </article>
-              <article className="resource-stat-card">
+              </button>
+              <button
+                type="button"
+                className="resource-stat-card resource-stat-button"
+                onClick={() => onOpenResource('deleted')}
+                disabled={containerTab === 'recyclebin'}
+              >
+                <span>Deleted</span>
+                <strong>{selectedServerRecycledContainers.length}</strong>
+              </button>
+              <button type="button" className="resource-stat-card resource-stat-button" onClick={() => onOpenResource('networks')}>
                 <span>Networks</span>
                 <strong>{networks.length}</strong>
-              </article>
-              <article className="resource-stat-card">
+              </button>
+              <button type="button" className="resource-stat-card resource-stat-button" onClick={() => onOpenResource('volumes')}>
                 <span>Volumes</span>
                 <strong>{volumes.length}</strong>
-              </article>
+              </button>
             </div>
           )}
 
@@ -4160,16 +4326,16 @@ function CreateContainerPanel({
           {containerTab === 'recyclebin' ? (
             recycledContainersLoading ? (
               <p className="resource-empty-state">Loading container recycle bin...</p>
-            ) : recycledContainers.length > 0 ? (
+            ) : selectedServerRecycledContainers.length > 0 ? (
               <div className="containers-list">
                 <div className="resource-delete-toolbar">
-                  <p>{recycledContainers.length} deleted container(s) available to restore.</p>
+                  <p>{selectedServerRecycledContainers.length} deleted container(s) available to restore.</p>
                   <button type="button" className="home-secondary-button" onClick={onRefreshRecycleBin} disabled={recycledContainersLoading}>
                     Refresh
                   </button>
                 </div>
                 <div className="agent-grid">
-                  {recycledContainers.map((container) => (
+                  {selectedServerRecycledContainers.map((container) => (
                     <article className="agent-card" key={container.id}>
                       <div className="agent-card-heading">
                         <h3>{container.container_name}</h3>
@@ -4193,14 +4359,22 @@ function CreateContainerPanel({
                           <dd>{container.created_at ? new Date(container.created_at).toLocaleString() : 'Unknown'}</dd>
                         </div>
                       </dl>
-                      <div className="agent-card-actions">
+                      <div className="agent-card-actions recycle-bin-card-actions">
                         <button
                           type="button"
                           className="home-primary-button"
                           onClick={() => onOpenRestoreContainer(container)}
-                          disabled={!canCreateContainer || restoreContainerLoading}
+                          disabled={!canCreateContainer || restoreContainerLoading || deleteRecycledContainerLoading}
                         >
                           Restore
+                        </button>
+                        <button
+                          type="button"
+                          className="home-danger-button"
+                          onClick={() => onOpenDeleteRecycledContainer(container)}
+                          disabled={!canDeleteContainer || restoreContainerLoading || deleteRecycledContainerLoading}
+                        >
+                          Delete
                         </button>
                       </div>
                     </article>
@@ -4323,6 +4497,16 @@ function CreateContainerPanel({
                         {containerActionLoading ? 'Starting...' : 'Start container'}
                       </button>
                     )}
+                    {selectedIsRunning && (
+                      <button
+                        type="button"
+                        className="home-secondary-button"
+                        onClick={onContainerInspect}
+                        disabled={containerDetailLoading || !selectedContainerDetail}
+                      >
+                        Inspect
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="home-secondary-button"
@@ -4440,6 +4624,37 @@ function CreateContainerPanel({
         </div>
       )}
 
+      {deleteRecycledContainerTarget && (
+        <div className="output-modal-backdrop" role="presentation">
+          <div className="resource-delete-modal" role="dialog" aria-modal="true" aria-labelledby="recycled-container-delete-title">
+            <h3 id="recycled-container-delete-title">Delete {deleteRecycledContainerTarget.container_name}?</h3>
+            <p>
+              This permanently removes the saved container snapshot and recycle-bin record for <strong>{deleteRecycledContainerTarget.container_name}</strong>.
+              Its preserved filesystem data cannot be restored after deletion.
+            </p>
+            {deleteRecycledContainerMessage && <p className="container-message">{deleteRecycledContainerMessage}</p>}
+            <div className="resource-modal-actions">
+              <button
+                type="button"
+                className="home-danger-button"
+                onClick={onConfirmDeleteRecycledContainer}
+                disabled={deleteRecycledContainerLoading}
+              >
+                {deleteRecycledContainerLoading ? 'Deleting...' : 'Confirm'}
+              </button>
+              <button
+                type="button"
+                className="home-secondary-button"
+                onClick={onCancelDeleteRecycledContainer}
+                disabled={deleteRecycledContainerLoading}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {restoreContainerTarget && (
         <div className="output-modal-backdrop" role="presentation">
           <div className="resource-delete-modal" role="dialog" aria-modal="true" aria-labelledby="container-restore-title">
@@ -4465,6 +4680,17 @@ function CreateContainerPanel({
                   ))}
               </select>
             </label>
+            <label>
+              <span>Restored Docker image</span>
+              <input
+                type="text"
+                value={restoreContainerImage}
+                onChange={(event) => onRestoreContainerImageChange(event.target.value)}
+                placeholder="nginx:latest"
+                disabled={restoreContainerLoading}
+              />
+              <small className="field-help">The preserved snapshot will be renamed to this image and its recycle tag will be removed.</small>
+            </label>
             {restoreContainerMessage && <p className="container-message">{restoreContainerMessage}</p>}
             <div className="resource-modal-actions">
               <button
@@ -4473,6 +4699,7 @@ function CreateContainerPanel({
                 onClick={onConfirmRestoreContainer}
                 disabled={
                   restoreContainerLoading ||
+                  !restoreContainerImage.trim() ||
                   String(restoreContainerServerId || LOCAL_SERVER_ID) !== String(restoreContainerTarget.agent_id || LOCAL_SERVER_ID)
                 }
               >
@@ -4503,8 +4730,9 @@ function CreateContainerPanel({
             aria-modal="true"
             aria-labelledby="container-output-title"
             style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+          onPointerDown={onOutputModalDragStart}
           >
-            <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+            <div className="output-modal-heading draggable">
               <h3 id="container-output-title">Container output</h3>
               {containerLoading && <span className="live-output-badge">Live</span>}
               <button
@@ -4521,6 +4749,32 @@ function CreateContainerPanel({
         </div>
       )}
 
+      {containerInspectOutputOpen && (
+        <div className="output-modal-layer" role="presentation">
+          <div
+            className="output-modal container-inspect-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="container-inspect-output-title"
+            style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+            onPointerDown={onOutputModalDragStart}
+          >
+            <div className="output-modal-heading draggable">
+              <h3 id="container-inspect-output-title">{containerInspectTitle}</h3>
+              <button
+                type="button"
+                onClick={onCloseContainerInspect}
+                onPointerDown={(event) => event.stopPropagation()}
+                aria-label="Close inspect output"
+              >
+                Close
+              </button>
+            </div>
+            <pre>{containerInspectOutput || 'No inspect output.'}</pre>
+          </div>
+        </div>
+      )}
+
       {containerLogOutputOpen && (
         <div className="output-modal-layer" role="presentation">
           <div
@@ -4529,8 +4783,9 @@ function CreateContainerPanel({
             aria-modal="true"
             aria-labelledby="container-log-output-title"
             style={{ transform: 'translate(' + outputModalPosition.x + 'px, ' + outputModalPosition.y + 'px)' }}
+          onPointerDown={onOutputModalDragStart}
           >
-            <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+            <div className="output-modal-heading draggable">
               <h3 id="container-log-output-title">{containerLogTitle || 'Container logs'}</h3>
               <span className="live-output-badge">Live</span>
               <button
@@ -4729,6 +4984,8 @@ function CreateContainerPanel({
             role="dialog"
             aria-modal="true"
             aria-labelledby="volume-file-preview-title"
+            style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+            onPointerDown={onOutputModalDragStart}
           >
             <div className="output-modal-heading">
               <div>
@@ -4738,12 +4995,13 @@ function CreateContainerPanel({
               <button
                 type="button"
                 onClick={onCloseVolumeFilePreview}
+                onPointerDown={(event) => event.stopPropagation()}
                 aria-label="Close file preview"
               >
                 Close
               </button>
             </div>
-            <div className="volume-file-preview-body">
+            <div className="volume-file-preview-body" data-no-modal-drag>
               {volumeFilePreviewLoading ? (
                 <p className="resource-empty-state">Opening file...</p>
               ) : volumeFilePreviewMessage ? (
@@ -5954,8 +6212,9 @@ function DeploymentPanel({
             aria-modal="true"
             aria-labelledby="deployment-output-title"
             style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+          onPointerDown={onOutputModalDragStart}
           >
-            <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+            <div className="output-modal-heading draggable">
               <h3 id="deployment-output-title">Deployment Output</h3>
               {deploymentLoading && <span className="live-output-badge">Live</span>}
               <button
@@ -5980,8 +6239,9 @@ function DeploymentPanel({
             aria-modal="true"
             aria-labelledby="container-log-output-title"
             style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+          onPointerDown={onOutputModalDragStart}
           >
-            <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+            <div className="output-modal-heading draggable">
               <h3 id="container-log-output-title">{containerLogTitle || 'Container Output'}</h3>
               <button
                 type="button"
@@ -6020,13 +6280,14 @@ function DeploymentPanel({
               top: `${connectModalPosition.y}px`,
               transform: 'none',
             }}
+            onPointerDown={onConnectModalDragStart}
           >
-            <div className="output-modal-heading draggable" onMouseDown={onConnectModalDragStart}>
+            <div className="output-modal-heading draggable">
               <h3 id="deployment-terminal-title">Terminal: {activeShellContainer.name}</h3>
               <button
                 type="button"
                 onClick={onCloseConnectModal}
-                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
                 aria-label="Close terminal"
               >
                 Close
@@ -6518,8 +6779,9 @@ function BuildImagePanel({
             aria-modal="true"
             aria-labelledby="build-output-title"
             style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+          onPointerDown={onOutputModalDragStart}
           >
-            <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+            <div className="output-modal-heading draggable">
               <h3 id="build-output-title">Image build output</h3>
               {buildLoading && <span className="live-output-badge">Live</span>}
               <button
@@ -6719,14 +6981,17 @@ function AgentPanel({
   agentDeleteOutputOpen,
   outputModalPosition,
   agents,
+  deletedAgents,
   agentsLoading,
   agentsError,
   selectedAgentId,
+  selectedDeletedAgentId,
   onAgentNameChange,
   onAgentServerIpChange,
   onAgentPortChange,
   onAgentTabChange,
   onSelectedAgentChange,
+  onSelectedDeletedAgentChange,
   onCreateAgent,
   onDeleteAgent,
   onRedeployAgent,
@@ -6737,7 +7002,8 @@ function AgentPanel({
   onCloseAgentDeleteOutput,
   onOutputModalDragStart,
 }) {
-  const deletableAgents = agents.filter((agent) => agent.id !== 'local');
+  const deletableAgents = agents.filter((agent) => agent.id !== 'local' && !agent.is_deleted);
+  const restorableAgents = (deletedAgents || []).filter((agent) => agent.id !== 'local' && agent.is_deleted);
   const [agentOutputCopyMessage, setAgentOutputCopyMessage] = useState('');
 
   const getAgentSetupCommandText = (value) => {
@@ -6886,21 +7152,39 @@ function AgentPanel({
             </form>
           ) : (
             <div className="agent-form">
-              <label>
-                <span>Select existing agent</span>
-                <select
-                  value={selectedAgentId}
-                  onChange={(event) => onSelectedAgentChange(event.target.value)}
-                  disabled={agentDeleteLoading || agentRedeployLoading || agentsLoading}
-                >
-                  <option value="">Select agent</option>
-                  {deletableAgents.map((agent) => (
-                    <option value={agent.id} key={agent.id}>
-                      {agent.name} ({agent.server_ip}:{agent.port || 19541})
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="agent-management-grid">
+                <label>
+                  <span>Select existing agent</span>
+                  <select
+                    value={selectedAgentId}
+                    onChange={(event) => onSelectedAgentChange(event.target.value)}
+                    disabled={agentDeleteLoading || agentRedeployLoading || agentsLoading}
+                  >
+                    <option value="">Select agent</option>
+                    {deletableAgents.map((agent) => (
+                      <option value={agent.id} key={agent.id}>
+                        {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  <span>Select deleted agent</span>
+                  <select
+                    value={selectedDeletedAgentId}
+                    onChange={(event) => onSelectedDeletedAgentChange(event.target.value)}
+                    disabled={agentDeleteLoading || agentRedeployLoading || agentsLoading}
+                  >
+                    <option value="">Select deleted agent</option>
+                    {restorableAgents.map((agent) => (
+                      <option value={agent.id} key={agent.id}>
+                        {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
 
               {agentMessage && <p className="container-message">{agentMessage}</p>}
 
@@ -6916,8 +7200,8 @@ function AgentPanel({
                 <button
                   type="button"
                   className="home-primary-button"
-                  disabled={!selectedAgentId || agentDeleteLoading || agentRedeployLoading}
-                  onClick={() => onRedeployAgent(selectedAgentId)}
+                  disabled={!selectedDeletedAgentId || agentDeleteLoading || agentRedeployLoading}
+                  onClick={() => onRedeployAgent(selectedDeletedAgentId)}
                 >
                   {agentRedeployLoading ? 'Redeploying agent...' : 'Redeploy selected agent'}
                 </button>
@@ -6943,8 +7227,9 @@ function AgentPanel({
                 aria-modal="true"
                 aria-labelledby="agent-create-output-title"
                 style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+              onPointerDown={onOutputModalDragStart}
               >
-                <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+                <div className="output-modal-heading draggable">
                   <h3 id="agent-create-output-title">Agent setup output</h3>
                   {agentLoading && <span className="live-output-badge">Live</span>}
                   {agentOutputCopyMessage === 'create' && <span className="live-output-badge">Copied</span>}
@@ -6982,8 +7267,9 @@ function AgentPanel({
                 aria-modal="true"
                 aria-labelledby="agent-delete-output-title"
                 style={{ transform: `translate(${outputModalPosition.x}px, ${outputModalPosition.y}px)` }}
+              onPointerDown={onOutputModalDragStart}
               >
-                <div className="output-modal-heading draggable" onPointerDown={onOutputModalDragStart}>
+                <div className="output-modal-heading draggable">
                   <h3 id="agent-delete-output-title">Agent management output</h3>
                   {(agentDeleteLoading || agentRedeployLoading) && <span className="live-output-badge">Live</span>}
                   {agentOutputCopyMessage === 'delete' && <span className="live-output-badge">Copied</span>}

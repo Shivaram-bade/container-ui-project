@@ -97,7 +97,7 @@ class AgentSerializer(serializers.ModelSerializer):
         model = Agent
         fields = [
             'id', 'name', 'server_ip', 'ssh_username', 'ssh_port', 'ssh_auth_type', 'port',
-            'connected', 'last_seen', 'hostname', 'containers_count', 'images_count',
+            'connected', 'is_deleted', 'deleted_at', 'last_seen', 'hostname', 'containers_count', 'images_count',
             'networks_count', 'volumes_count', 'created_at', 'updated_at',
         ]
 

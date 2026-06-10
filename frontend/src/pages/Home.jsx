@@ -489,6 +489,7 @@ export default function Home() {
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [selectedDeletedAgentId, setSelectedDeletedAgentId] = useState('');
   const [agentDeleteLoading, setAgentDeleteLoading] = useState(false);
+  const [agentRemoveLoading, setAgentRemoveLoading] = useState(false);
   const [agentRedeployLoading, setAgentRedeployLoading] = useState(false);
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentMessage, setAgentMessage] = useState('');
@@ -915,6 +916,34 @@ export default function Home() {
       setAgentMessage(data?.error || data?.detail || 'Unable to redeploy agent.');
     } finally {
       setAgentRedeployLoading(false);
+    }
+  };
+
+  const handleRemoveDeletedAgent = async (agentId) => {
+    if (!agentId || agentId === 'local') return false;
+
+    const deletedAgent = deletedAgents.find((agent) => String(agent.id) === String(agentId));
+    const agentLabel = deletedAgent?.name || 'this deleted agent';
+
+    setAgentRemoveLoading(true);
+    setAgentMessage('');
+
+    try {
+      const response = await authService.removeDeletedAgent(agentId);
+      setAgentMessage(response.data?.message || `${agentLabel} permanently removed from deleted agents.`);
+      setAgentDeleteOutput(response.data?.message || `${agentLabel} permanently removed from deleted agents.`);
+      setSelectedDeletedAgentId('');
+      setDeletedAgents((current) => current.filter((agent) => String(agent.id) !== String(agentId)));
+      await loadAgents();
+      return true;
+    } catch (error) {
+      const data = error.response?.data;
+      const message = data?.error || data?.detail || 'Unable to remove the deleted agent.';
+      setAgentMessage(message);
+      setAgentDeleteOutput(message);
+      return false;
+    } finally {
+      setAgentRemoveLoading(false);
     }
   };
 
@@ -3406,6 +3435,7 @@ export default function Home() {
             agentTab={agentTab}
             agentLoading={agentLoading}
             agentDeleteLoading={agentDeleteLoading}
+            agentRemoveLoading={agentRemoveLoading}
             agentRedeployLoading={agentRedeployLoading}
             agentMessage={agentMessage}
             agentCreateOutput={agentCreateOutput}
@@ -3427,6 +3457,7 @@ export default function Home() {
             onSelectedDeletedAgentChange={setSelectedDeletedAgentId}
             onCreateAgent={handleCreateAgent}
             onDeleteAgent={handleDeleteAgent}
+            onRemoveDeletedAgent={handleRemoveDeletedAgent}
             onRedeployAgent={handleRedeployAgent}
             onRefreshAgents={loadAgents}
             onOpenAgentCreateOutput={() => setAgentCreateOutputOpen(true)}
@@ -7616,6 +7647,7 @@ function AgentPanel({
   agentTab,
   agentLoading,
   agentDeleteLoading,
+  agentRemoveLoading,
   agentRedeployLoading,
   agentMessage,
   agentCreateOutput,
@@ -7637,6 +7669,7 @@ function AgentPanel({
   onSelectedDeletedAgentChange,
   onCreateAgent,
   onDeleteAgent,
+  onRemoveDeletedAgent,
   onRedeployAgent,
   onRefreshAgents,
   onOpenAgentCreateOutput,
@@ -7653,6 +7686,11 @@ function AgentPanel({
   const deletableAgents = agents.filter((agent) => agent.id !== 'local' && !agent.is_deleted);
   const restorableAgents = (deletedAgents || []).filter((agent) => agent.id !== 'local' && agent.is_deleted);
   const [agentOutputCopyMessage, setAgentOutputCopyMessage] = useState('');
+  const [pendingRemoveAgentId, setPendingRemoveAgentId] = useState('');
+  const [removeAgentAttempted, setRemoveAgentAttempted] = useState(false);
+  const pendingRemoveAgent = restorableAgents.find(
+    (agent) => String(agent.id) === String(pendingRemoveAgentId)
+  );
 
   const getAgentSetupCommandText = (value) => {
     const lines = String(value || '').replace(/\r\n/g, '\n').split('\n');
@@ -7699,6 +7737,16 @@ function AgentPanel({
     } catch (error) {
       setAgentOutputCopyMessage('failed');
       window.setTimeout(() => setAgentOutputCopyMessage(''), 2000);
+    }
+  };
+
+  const handleConfirmRemoveAgent = async () => {
+    if (!pendingRemoveAgent) return;
+    setRemoveAgentAttempted(true);
+    const removed = await onRemoveDeletedAgent(pendingRemoveAgent.id);
+    if (removed) {
+      setPendingRemoveAgentId('');
+      setRemoveAgentAttempted(false);
     }
   };
 
@@ -7810,7 +7858,7 @@ function AgentPanel({
                   <select
                     value={selectedAgentId}
                     onChange={(event) => onSelectedAgentChange(event.target.value)}
-                    disabled={agentDeleteLoading || agentRedeployLoading || agentsLoading}
+                    disabled={agentDeleteLoading || agentRemoveLoading || agentRedeployLoading || agentsLoading}
                   >
                     <option value="">Select agent</option>
                     {deletableAgents.map((agent) => (
@@ -7821,21 +7869,37 @@ function AgentPanel({
                   </select>
                 </label>
 
-                <label>
-                  <span>Select deleted agent</span>
-                  <select
-                    value={selectedDeletedAgentId}
-                    onChange={(event) => onSelectedDeletedAgentChange(event.target.value)}
-                    disabled={agentDeleteLoading || agentRedeployLoading || agentsLoading}
-                  >
-                    <option value="">Select deleted agent</option>
-                    {restorableAgents.map((agent) => (
-                      <option value={agent.id} key={agent.id}>
-                        {agent.name} ({agent.server_ip}:{agent.port || 19541})
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="agent-deleted-field">
+                  <label htmlFor="deleted-agent-select">Select deleted agent</label>
+                  <div className="agent-deleted-select-row">
+                    <select
+                      id="deleted-agent-select"
+                      value={selectedDeletedAgentId}
+                      onChange={(event) => onSelectedDeletedAgentChange(event.target.value)}
+                      disabled={agentDeleteLoading || agentRemoveLoading || agentRedeployLoading || agentsLoading}
+                    >
+                      <option value="">Select deleted agent</option>
+                      {restorableAgents.map((agent) => (
+                        <option value={agent.id} key={agent.id}>
+                          {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="agent-deleted-remove-button"
+                      aria-label="Permanently remove selected deleted agent"
+                      title="Permanently remove selected deleted agent"
+                      disabled={!canDeleteAgents || !selectedDeletedAgentId || agentDeleteLoading || agentRemoveLoading || agentRedeployLoading || agentsLoading}
+                      onClick={() => {
+                        setRemoveAgentAttempted(false);
+                        setPendingRemoveAgentId(selectedDeletedAgentId);
+                      }}
+                    >
+                      <span aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {agentMessage && <p className="container-message">{agentMessage}</p>}
@@ -7844,7 +7908,7 @@ function AgentPanel({
                 <button
                   type="button"
                   className="home-danger-button"
-                  disabled={!canDeleteAgents || !selectedAgentId || agentDeleteLoading || agentRedeployLoading}
+                  disabled={!canDeleteAgents || !selectedAgentId || agentDeleteLoading || agentRemoveLoading || agentRedeployLoading}
                   onClick={() => onDeleteAgent(selectedAgentId)}
                 >
                   {agentDeleteLoading ? 'Deleting agent...' : 'Delete selected agent'}
@@ -7852,12 +7916,12 @@ function AgentPanel({
                 <button
                   type="button"
                   className="home-primary-button"
-                  disabled={!canManageAgents || !selectedDeletedAgentId || agentDeleteLoading || agentRedeployLoading}
+                  disabled={!canManageAgents || !selectedDeletedAgentId || agentDeleteLoading || agentRemoveLoading || agentRedeployLoading}
                   onClick={() => onRedeployAgent(selectedDeletedAgentId)}
                 >
                   {agentRedeployLoading ? 'Redeploying agent...' : 'Redeploy selected agent'}
                 </button>
-                <button type="button" className="home-secondary-button" onClick={onRefreshAgents} disabled={agentsLoading || agentRedeployLoading}>
+                <button type="button" className="home-secondary-button" onClick={onRefreshAgents} disabled={agentsLoading || agentRemoveLoading || agentRedeployLoading}>
                   Refresh
                 </button>
                 <button
@@ -7867,6 +7931,66 @@ function AgentPanel({
                 >
                   View management output
                 </button>
+              </div>
+            </div>
+          )}
+
+          {pendingRemoveAgent && (
+            <div className="output-modal-backdrop" role="presentation">
+              <div
+                className="resource-delete-modal agent-remove-confirm-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="agent-remove-title"
+                aria-describedby="agent-remove-description agent-remove-note"
+              >
+                <div className="agent-remove-confirm-heading">
+                  <span className="agent-remove-confirm-icon" aria-hidden="true">!</span>
+                  <div>
+                    <span>Permanent removal</span>
+                    <h3 id="agent-remove-title">Remove {pendingRemoveAgent.name}?</h3>
+                  </div>
+                </div>
+
+                <p id="agent-remove-description">
+                  Are you sure you want to permanently remove this agent from the deleted agents list?
+                </p>
+
+                <div className="agent-remove-confirm-target">
+                  <span>Agent</span>
+                  <strong>{pendingRemoveAgent.name}</strong>
+                  <small>{pendingRemoveAgent.server_ip}:{pendingRemoveAgent.port || 19541}</small>
+                </div>
+
+                <p className="agent-remove-confirm-note" id="agent-remove-note">
+                  <strong>Note:</strong> This agent cannot be redeployed after removal. If you want to manage this server again, you will need to create a new agent.
+                </p>
+
+                {removeAgentAttempted && agentMessage ? (
+                  <p className="container-message error" role="alert">{agentMessage}</p>
+                ) : null}
+
+                <div className="resource-modal-actions">
+                  <button
+                    type="button"
+                    className="home-danger-button"
+                    onClick={handleConfirmRemoveAgent}
+                    disabled={agentRemoveLoading}
+                  >
+                    {agentRemoveLoading ? `Removing ${pendingRemoveAgent.name}...` : 'Confirm'}
+                  </button>
+                  <button
+                    type="button"
+                    className="home-secondary-button"
+                    onClick={() => {
+                      setPendingRemoveAgentId('');
+                      setRemoveAgentAttempted(false);
+                    }}
+                    disabled={agentRemoveLoading}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -7923,7 +8047,7 @@ function AgentPanel({
               >
                 <div className="output-modal-heading draggable">
                   <h3 id="agent-delete-output-title">Agent management output</h3>
-                  {(agentDeleteLoading || agentRedeployLoading) && <span className="live-output-badge">Live</span>}
+                  {(agentDeleteLoading || agentRemoveLoading || agentRedeployLoading) && <span className="live-output-badge">Live</span>}
                   {agentOutputCopyMessage === 'delete' && <span className="live-output-badge">Copied</span>}
                   {agentOutputCopyMessage === 'failed' && <span className="live-output-badge">Copy failed</span>}
                   <button
@@ -8253,20 +8377,37 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
 
   if (loading) {
     return (
-      <section className="home-panel">
-        <h2>Server Health</h2>
-        <p>Loading server information...</p>
+      <section className="server-info-panel server-health-state-panel" aria-live="polite">
+        <div className="server-health-state-copy">
+          <span className="server-health-pulse" aria-hidden="true" />
+          <div>
+            <span className="server-health-eyebrow">Live diagnostics</span>
+            <h2>Checking server health</h2>
+            <p>Collecting resource, operating system, and Docker information...</p>
+          </div>
+        </div>
+        <div className="server-health-skeleton-grid" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
       </section>
     );
   }
 
   if (error) {
     return (
-      <section className="home-panel">
-        <h2>Server Health</h2>
-        <p>{error}</p>
+      <section className="server-info-panel server-health-state-panel">
+        <div className="server-health-error-mark" aria-hidden="true">!</div>
+        <div className="server-health-state-copy">
+          <div>
+            <span className="server-health-eyebrow">Connection issue</span>
+            <h2>Health check unavailable</h2>
+            <p>{error} Check that the backend server is reachable, then try again.</p>
+          </div>
+        </div>
         <button type="button" className="home-primary-button" onClick={onRefresh}>
-          Retry
+          Try again
         </button>
       </section>
     );
@@ -8276,18 +8417,63 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
     return null;
   }
 
-  const sections = [
-    ['Operating System', serverInfo.operating_system],
-    ['Resources', serverInfo.resources],
-    ['Docker Summary', serverInfo.docker],
+  const resources = serverInfo.resources || {};
+  const operatingSystem = serverInfo.operating_system || {};
+  const docker = serverInfo.docker || {};
+  const memory = resources.memory || {};
+  const disk = resources.disk || {};
+  const loadAverage = resources.load_average || {};
+  const cpuCount = Number(resources.cpu_count) || 0;
+  const oneMinuteLoad = parseHealthNumber(loadAverage.one_minute);
+  const memoryPercent = parseHealthPercent(memory.used_percent);
+  const diskPercent = parseHealthPercent(disk.used_percent);
+  const loadPercent = cpuCount && oneMinuteLoad !== null
+    ? Math.min(100, (oneMinuteLoad / cpuCount) * 100)
+    : null;
+  const healthStatus = getServerHealthStatus([memoryPercent, diskPercent, loadPercent]);
+  const resourceMetrics = [
+    {
+      key: 'memory',
+      label: 'Memory',
+      value: memory.used_percent || 'Unavailable',
+      detail: memory.used && memory.total ? `${memory.used} of ${memory.total} used` : 'Usage data unavailable',
+      percent: memoryPercent,
+    },
+    {
+      key: 'disk',
+      label: 'Disk space',
+      value: disk.used_percent || 'Unavailable',
+      detail: disk.free ? `${disk.free} available` : 'Usage data unavailable',
+      percent: diskPercent,
+    },
+    {
+      key: 'cpu',
+      label: 'System load',
+      value: oneMinuteLoad !== null ? oneMinuteLoad.toFixed(2) : 'Unavailable',
+      detail: cpuCount ? `Across ${cpuCount} CPU ${cpuCount === 1 ? 'core' : 'cores'}` : 'CPU data unavailable',
+      percent: loadPercent,
+    },
+  ];
+  const dockerMetrics = [
+    ['Containers', docker.containers_count],
+    ['Images', docker.images_count],
+    ['Networks', docker.networks_count],
+    ['Volumes', docker.volumes_count],
+  ];
+  const systemDetails = [
+    ['System', [operatingSystem.system, operatingSystem.release].filter(Boolean).join(' ')],
+    ['Architecture', operatingSystem.architecture],
+    ['Processor', operatingSystem.processor],
+    ['Platform', operatingSystem.platform],
   ];
 
   return (
     <section className="server-info-panel">
       <div className="server-info-heading">
         <div>
+          <span className="server-health-eyebrow">Live diagnostics</span>
           <h2>Server Health</h2>
-          <p>Updated every 1 minute. Last checked at {serverInfo.checked_at}</p>
+          <p>Automatically checked every minute</p>
         </div>
         <div className="server-info-actions">
           <button type="button" className="home-primary-button" onClick={onRefresh}>
@@ -8301,23 +8487,159 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
         </div>
       </div>
 
-      <div className="server-info-grid">
-        {sections.map(([title, values]) => (
-          <article className="server-info-card" key={title}>
-            <h3>{title}</h3>
-            <dl>
-              {Object.entries(values || {}).map(([key, value]) => (
-                <div key={key}>
-                  <dt>{formatLabel(key)}</dt>
-                  <dd>{formatValue(value)}</dd>
-                </div>
-              ))}
-            </dl>
-          </article>
-        ))}
+      <article className={`server-health-overview ${healthStatus.tone}`}>
+        <div className="server-health-orb" aria-hidden="true">
+          <span />
+        </div>
+        <div className="server-health-overview-copy">
+          <span className="server-health-status-label">{healthStatus.label}</span>
+          <h3>{healthStatus.title}</h3>
+          <p>{healthStatus.description}</p>
+        </div>
+        <div className="server-health-check-time">
+          <span>Last checked</span>
+          <strong>{formatServerTimestamp(serverInfo.checked_at)}</strong>
+        </div>
+      </article>
+
+      <div className="server-health-resource-grid">
+        {resourceMetrics.map((metric) => {
+          const tone = getMetricTone(metric.percent);
+          return (
+            <article className={`server-health-metric-card ${tone}`} key={metric.key}>
+              <div className="server-health-metric-heading">
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+              </div>
+              <div
+                className="server-health-meter"
+                role="progressbar"
+                aria-label={`${metric.label} utilization`}
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow={metric.percent === null ? undefined : Math.round(metric.percent)}
+                aria-valuetext={metric.percent === null ? 'Utilization unavailable' : `${Math.round(metric.percent)}% utilized`}
+              >
+                <span style={{ width: `${metric.percent === null ? 0 : metric.percent}%` }} />
+              </div>
+              <p>{metric.detail}</p>
+            </article>
+          );
+        })}
+      </div>
+
+      <div className="server-health-detail-grid">
+        <article className="server-health-section-card">
+          <div className="server-health-section-heading">
+            <span className="server-health-section-icon docker" aria-hidden="true">D</span>
+            <div>
+              <h3>Docker workspace</h3>
+              <p>Resources available on this server</p>
+            </div>
+          </div>
+          <div className="server-health-docker-grid">
+            {dockerMetrics.map(([label, value]) => (
+              <div className="server-health-docker-item" key={label}>
+                <strong>{value ?? 0}</strong>
+                <span>{label}</span>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="server-health-section-card">
+          <div className="server-health-section-heading">
+            <span className="server-health-section-icon system" aria-hidden="true">OS</span>
+            <div>
+              <h3>System profile</h3>
+              <p>The environment running the application</p>
+            </div>
+          </div>
+          <div className="server-health-system-list">
+            {systemDetails.map(([label, value]) => (
+              <div className="server-health-system-item" key={label}>
+                <span>{label}</span>
+                <strong title={formatValue(value)}>{formatValue(value)}</strong>
+              </div>
+            ))}
+          </div>
+          {operatingSystem.version ? (
+            <p className="server-health-version" title={operatingSystem.version}>
+              Kernel version: {operatingSystem.version}
+            </p>
+          ) : null}
+        </article>
       </div>
     </section>
   );
+}
+
+function parseHealthNumber(value) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseHealthPercent(value) {
+  const parsed = parseHealthNumber(String(value || '').replace('%', ''));
+  return parsed === null ? null : Math.min(100, Math.max(0, parsed));
+}
+
+function getMetricTone(percent) {
+  if (percent === null) return 'neutral';
+  if (percent >= 90) return 'critical';
+  if (percent >= 75) return 'warning';
+  return 'healthy';
+}
+
+function getServerHealthStatus(metrics) {
+  const availableMetrics = metrics.filter((metric) => metric !== null);
+  const highestMetric = availableMetrics.length ? Math.max(...availableMetrics) : null;
+
+  if (highestMetric === null) {
+    return {
+      tone: 'neutral',
+      label: 'Limited metrics',
+      title: 'Server responded, but usage data is unavailable',
+      description: 'The health check completed, but this environment did not expose enough resource data to assess utilization.',
+    };
+  }
+
+  if (highestMetric !== null && highestMetric >= 90) {
+    return {
+      tone: 'critical',
+      label: 'Action recommended',
+      title: 'Server resources are under heavy pressure',
+      description: 'One or more resources are above 90% utilization. Review the highlighted metric before performance is affected.',
+    };
+  }
+
+  if (highestMetric !== null && highestMetric >= 75) {
+    return {
+      tone: 'warning',
+      label: 'Keep an eye on it',
+      title: 'Server is responding with elevated usage',
+      description: 'The health check succeeded, but one or more resources are approaching their comfortable operating range.',
+    };
+  }
+
+  return {
+    tone: 'healthy',
+    label: 'Online',
+    title: 'Server is responding normally',
+    description: 'The latest health check completed successfully and reported no high resource pressure.',
+  };
+}
+
+function formatServerTimestamp(value) {
+  if (!value) return 'Just now';
+
+  const timestamp = new Date(String(value).replace(' UTC', 'Z'));
+  if (Number.isNaN(timestamp.getTime())) return value;
+
+  return timestamp.toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
 }
 
 function formatLabel(label) {

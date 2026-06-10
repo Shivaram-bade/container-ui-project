@@ -151,6 +151,12 @@ export const authService = {
     });
   },
 
+  removeDeletedAgent: (agentId) => {
+    return api.delete('/api/auth/agents/', {
+      data: { id: agentId, purge_deleted: true },
+    });
+  },
+
   redeployAgent: (agentId, agentData = {}) => {
     return api.post('/api/auth/agents/', {
       redeploy_id: agentId,

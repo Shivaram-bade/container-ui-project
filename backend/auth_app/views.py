@@ -3607,6 +3607,23 @@ def agents(request):
                 'error': 'Agent ID is required.',
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        purge_deleted = request.data.get('purge_deleted') in [True, 1, '1', 'true', 'True']
+        if purge_deleted:
+            try:
+                agent = Agent.objects.get(owner=request.user, id=agent_id, is_deleted=True)
+            except Agent.DoesNotExist:
+                return Response({
+                    'error': 'Deleted agent not found.',
+                }, status=status.HTTP_404_NOT_FOUND)
+
+            agent_name = agent.name
+            agent.delete()
+            return Response({
+                'success': True,
+                'removed': True,
+                'message': f'{agent_name} permanently removed from deleted agents.',
+            }, status=status.HTTP_200_OK)
+
         try:
             agent = Agent.objects.get(owner=request.user, id=agent_id, is_deleted=False)
         except Agent.DoesNotExist:

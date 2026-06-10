@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
 import '../styles/Home.css';
@@ -115,6 +116,17 @@ const LOCAL_SERVER_ID = 'local';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
 const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, rbacAction, userProfileAction, ...agentActions];
 const DashboardBackContext = createContext(null);
+
+function OutputPortal({ children }) {
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div className="output-modal-layer" role="presentation">
+      {children}
+    </div>,
+    document.body
+  );
+}
 
 const getStoredUser = () => {
   try {
@@ -512,18 +524,18 @@ export default function Home() {
   const canOperate = (operation) => user?.is_admin || !hasPermissionData || userOperations.has('administrator') || userOperations.has(operation);
   const canSeeAction = (action) => {
     const actionOperations = {
-      container: ['create_container', 'delete_container', 'connect_container'],
-      image: ['build_images', 'delete_images'],
-      network: ['create_network', 'delete_network'],
-      volume: ['create_volume', 'delete_volume'],
-      deployment: ['create_deployment', 'delete_deployment'],
-      registry: ['create_deployment'],
+      container: ['create_container', 'view_running_containers', 'view_stopped_containers', 'view_recycle_bin', 'delete_container', 'connect_container'],
+      image: ['view_images', 'build_images', 'delete_images'],
+      network: ['view_networks', 'create_network', 'delete_network'],
+      volume: ['view_volumes', 'create_volume', 'delete_volume'],
+      deployment: ['view_deployments', 'create_deployment', 'delete_deployment'],
+      registry: ['registry_deploy'],
       'server-info': ['view_server_info'],
+      'user-profile': ['change_password'],
       rbac: ['create_rbac_user', 'create_rbac_group'],
-      'agent-create': ['create_agent'],
-      'agent-connected': ['view_connected_agent'],
-      monitoring: ['create_container', 'delete_container', 'connect_container', 'view_connected_agent'],
-      dashboard: ['view_connected_agent', 'create_container', 'delete_container', 'connect_container', 'build_images', 'delete_images', 'create_network', 'delete_network', 'create_volume', 'delete_volume', 'create_deployment', 'delete_deployment'],
+      'agent-create': ['create_agent', 'manage_agents', 'delete_agents'],
+      'agent-connected': ['view_connected_agent', 'manage_agents'],
+      monitoring: ['view_monitoring'],
     }[action.id];
     return !actionOperations || actionOperations.some((operation) => canOperate(operation));
   };
@@ -560,6 +572,17 @@ export default function Home() {
   }, []);
 
   const handleActionSelect = (action) => {
+    if (action.id !== 'dashboard' && !canSeeAction(action)) return;
+    if (action.id === 'container' && !canOperate('create_container')) {
+      if (canOperate('view_running_containers')) setContainerTab('existing');
+      else if (canOperate('view_stopped_containers')) setContainerTab('stopped');
+      else if (canOperate('view_recycle_bin')) setContainerTab('recyclebin');
+    }
+    if (action.id === 'image' && !canOperate('build_images') && canOperate('view_images')) setImageTab('delete');
+    if (action.id === 'network' && !canOperate('create_network') && canOperate('view_networks')) setNetworkTab('delete');
+    if (action.id === 'volume' && !canOperate('create_volume') && canOperate('view_volumes')) setVolumeTab('delete');
+    if (action.id === 'deployment' && !canOperate('create_deployment') && canOperate('view_deployments')) setDeploymentTab('existing');
+    if (action.id === 'agent-create' && !canOperate('create_agent')) setAgentTab('delete');
     setActiveAction(action);
     navigate(action.path);
   };
@@ -569,11 +592,25 @@ export default function Home() {
   };
 
   const handleOpenUserProfile = () => {
-    handleActionSelect(userProfileAction);
+    if (canSeeAction(userProfileAction)) handleActionSelect(userProfileAction);
   };
+
+  useEffect(() => {
+    if (!hasPermissionData || activeAction.id === 'dashboard' || canSeeAction(activeAction)) return;
+    setActiveAction(dashboardAction);
+    navigate(dashboardAction.path, { replace: true });
+  }, [currentUser, activeAction.id]);
 
   const handleChangePassword = async (event) => {
     event.preventDefault();
+    if (newPassword !== confirmNewPassword) {
+      setPasswordMessage('New password and confirm password do not match.');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordMessage('New password must be at least 8 characters.');
+      return;
+    }
     setPasswordLoading(true);
     setPasswordMessage('');
 
@@ -1081,20 +1118,27 @@ export default function Home() {
 
     const loadDashboardData = () => {
       const serverId = getSelectedDashboardServerId();
-      loadAgents();
-      loadContainers(serverId);
-      loadImages(serverId);
-      loadNetworks(serverId);
-      loadVolumes(serverId);
-      loadDeployments();
-      loadRecycledContainers();
+      const needsAgents = [
+        'view_connected_agent', 'view_running_containers', 'view_stopped_containers',
+        'view_recycle_bin', 'view_images', 'view_networks', 'view_volumes',
+        'view_deployments', 'view_monitoring', 'view_server_info',
+      ].some(canOperate);
+      if (needsAgents) loadAgents();
+      if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) loadContainers(serverId);
+      if (canOperate('view_images')) loadImages(serverId);
+      if (canOperate('view_networks')) loadNetworks(serverId);
+      if (canOperate('view_volumes')) loadVolumes(serverId);
+      if (canOperate('view_deployments')) loadDeployments();
+      if (canOperate('view_recycle_bin')) loadRecycledContainers();
     };
 
     const syncDashboardContainers = () => {
       if (document.visibilityState !== 'visible') return;
       const serverId = getSelectedDashboardServerId();
-      loadContainers(serverId, { silent: true, preserveSelection: true });
-      loadRecycledContainers({ silent: true });
+      if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) {
+        loadContainers(serverId, { silent: true, preserveSelection: true });
+      }
+      if (canOperate('view_recycle_bin')) loadRecycledContainers({ silent: true });
     };
 
     loadDashboardData();
@@ -1104,7 +1148,7 @@ export default function Home() {
       window.clearInterval(refreshTimer);
       window.clearInterval(containerSyncTimer);
     };
-  }, [isDashboardActive, dashboardServerId]);
+  }, [isDashboardActive, dashboardServerId, currentUser]);
 
   useEffect(() => {
     if (!buildJobId || !buildLoading) {
@@ -1659,6 +1703,11 @@ export default function Home() {
     }
     if (target === 'server-health') {
       handleActionSelect(serverInfoAction);
+      return;
+    }
+    if (target === 'monitoring') {
+      setMonitoringServerId(dashboardServerId);
+      handleActionSelect(monitoringAction);
     }
   };
 
@@ -2468,6 +2517,7 @@ export default function Home() {
   };
 
   const handleSelectedNetworkChange = (network) => {
+    if (isProtectedDockerNetwork(network)) return;
     setSelectedNetworks((current) => toggleSelectedItem(current, network, getNetworkId));
   };
 
@@ -2476,8 +2526,10 @@ export default function Home() {
       return;
     }
 
+    const deletableNetworks = selectedNetworks.filter((network) => !isProtectedDockerNetwork(network));
+    if (deletableNetworks.length === 0) return;
     setNetworkDeleteMessage('');
-    setPendingDeleteNetworks(selectedNetworks);
+    setPendingDeleteNetworks(deletableNetworks);
   };
 
   const handleRejectDeleteNetwork = () => {
@@ -3191,7 +3243,7 @@ export default function Home() {
             <p>{activeAction.description}</p>
           </div>
           <div className="home-header-actions">
-            <button type="button" className="home-user-card" onClick={handleOpenUserProfile}>
+            <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={!canSeeAction(userProfileAction)}>
               <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
               <span className="home-user-copy"><span>Workspace</span>
               <strong>{user?.name || user?.username || 'Signed-in user'}</strong>
@@ -3226,15 +3278,20 @@ export default function Home() {
             recycledContainersError={recycledContainersError}
             onRefresh={() => {
               const serverId = dashboardServerId || LOCAL_SERVER_ID;
-              loadAgents();
-              loadContainers(serverId);
-              loadImages(serverId);
-              loadNetworks(serverId);
-              loadVolumes(serverId);
-              loadDeployments();
-              loadRecycledContainers();
+              if ([
+                'view_connected_agent', 'view_running_containers', 'view_stopped_containers',
+                'view_recycle_bin', 'view_images', 'view_networks', 'view_volumes',
+                'view_deployments', 'view_monitoring', 'view_server_info',
+              ].some(canOperate)) loadAgents();
+              if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) loadContainers(serverId);
+              if (canOperate('view_images')) loadImages(serverId);
+              if (canOperate('view_networks')) loadNetworks(serverId);
+              if (canOperate('view_volumes')) loadVolumes(serverId);
+              if (canOperate('view_deployments')) loadDeployments();
+              if (canOperate('view_recycle_bin')) loadRecycledContainers();
             }}
             onOpenResource={handleDashboardNavigate}
+            canOperate={canOperate}
           />
         ) : isUserProfileActive ? (
           <UserProfilePanel
@@ -3368,6 +3425,7 @@ export default function Home() {
             onOpenAgentDeleteOutput={() => setAgentDeleteOutputOpen(true)}
             onCloseAgentDeleteOutput={() => setAgentDeleteOutputOpen(false)}
             onOutputModalDragStart={handleOutputModalDragStart}
+            canOperate={canOperate}
           />
         ) : isContainerActive ? (
           <CreateContainerPanel
@@ -4005,21 +4063,21 @@ function MonitoringPanel({
       )}
 
       {containerLogOutputOpen && (
-        <div className="output-modal-layer" role="presentation"><div className="output-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-log-title" style={{ transform: 'translate(' + outputModalPosition.x + 'px, ' + outputModalPosition.y + 'px)' }} onPointerDown={onOutputModalDragStart}>
+        <OutputPortal><div className="output-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-log-title" style={{ transform: 'translate(' + outputModalPosition.x + 'px, ' + outputModalPosition.y + 'px)' }} onPointerDown={onOutputModalDragStart}>
           <div className="output-modal-heading draggable"><h3 id="monitoring-log-title">{containerLogTitle || 'Container logs'}</h3><span className="live-output-badge">Live</span><button type="button" onClick={onCloseContainerLogOutput} onPointerDown={(event) => event.stopPropagation()}>Close</button></div>
           <pre>{containerLogOutput || 'No output yet.'}</pre>
-        </div></div>
+        </div></OutputPortal>
       )}
 
       {connectModalOpen && activeShellContainer && (
-        <div className="output-modal-layer" role="presentation"><div className="output-modal connect-modal terminal-modal container-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-terminal-title" style={{ left: connectModalPosition.x + 'px', top: connectModalPosition.y + 'px', transform: 'none' }} onPointerDown={onConnectModalDragStart}>
+        <OutputPortal><div className="output-modal connect-modal terminal-modal container-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-terminal-title" style={{ left: connectModalPosition.x + 'px', top: connectModalPosition.y + 'px', transform: 'none' }} onPointerDown={onConnectModalDragStart}>
           <div className="output-modal-heading draggable"><h3 id="monitoring-terminal-title">Connected to {activeShellContainer.name}</h3><button type="button" onClick={onCloseConnectModal} onPointerDown={(event) => event.stopPropagation()}>Close</button></div>
           <div className="terminal-banner">connected to {activeShellContainer.name}</div>
           <div className="terminal-output" ref={terminalOutputRef} onClick={() => shellInputRef.current?.focus()} onPointerDown={(event) => event.stopPropagation()}>
             <pre>{shellOutput}</pre>
             {shellSessionId && <form className="terminal-input-form" onSubmit={onSendShellCommand}><input ref={shellInputRef} type="text" className="terminal-input" value={shellInput} onChange={(event) => onShellInputChange(event.target.value)} disabled={shellInputLoading} autoComplete="off" spellCheck="false" aria-label={'Terminal command for ' + activeShellContainer.name} autoFocus /></form>}
           </div>
-        </div></div>
+        </div></OutputPortal>
       )}
     </section>
   );
@@ -4049,6 +4107,7 @@ function DashboardPanel({
   recycledContainersError,
   onRefresh,
   onOpenResource,
+  canOperate = () => true,
 }) {
   const serverOptions = ensureLocalServerOption(agents);
   const selectedServer = serverOptions.find((agent) => String(agent.id) === String(dashboardServerId || LOCAL_SERVER_ID)) || serverOptions[0];
@@ -4061,16 +4120,17 @@ function DashboardPanel({
   const loading = containersLoading || imagesLoading || networksLoading || volumesLoading || deploymentsLoading || agentsLoading || recycledContainersLoading;
   const errors = [containersError, imagesError, networksError, volumesError, recycledContainersError].filter(Boolean);
   const cards = [
-    { key: 'running', title: 'Running Containers', value: runningContainers.length, meta: 'Active workloads', visual: 'containers' },
-    { key: 'stopped', title: 'Stopped containers', value: stoppedContainers.length, meta: 'Ready to start', visual: 'stopped' },
-    { key: 'deleted', title: 'Deleted Containers', value: deletedContainers.length, meta: 'Recycle bin', visual: 'deleted' },
-    { key: 'agents', title: 'Connected Agents', value: connectedAgents.length, meta: `${totalManagedServers} managed server(s)`, visual: 'agents' },
-    { key: 'server-health', title: 'Server Health', value: getAgentStatus(selectedServer).label, meta: selectedServer?.hostname || selectedServer?.server_ip || 'Application server', visual: 'health' },
-    { key: 'volumes', title: 'Volumes', value: volumes.length, meta: 'Persistent storage', visual: 'volumes' },
-    { key: 'networks', title: 'Networks', value: networks.length, meta: 'Connection fabric', visual: 'networks' },
-    { key: 'images', title: 'Images', value: images.length, meta: 'Build artifacts', visual: 'images' },
-    { key: 'deployments', title: 'Deployments', value: deployments.length, meta: 'Compose applications', visual: 'deployments' },
-  ];
+    { key: 'running', permission: 'view_running_containers', title: 'Running Containers', value: runningContainers.length, meta: 'Active workloads', visual: 'containers' },
+    { key: 'stopped', permission: 'view_stopped_containers', title: 'Stopped containers', value: stoppedContainers.length, meta: 'Ready to start', visual: 'stopped' },
+    { key: 'deleted', permission: 'view_recycle_bin', title: 'Deleted Containers', value: deletedContainers.length, meta: 'Recycle bin', visual: 'deleted' },
+    { key: 'monitoring', permission: 'view_monitoring', title: 'Monitoring', value: 'Live', meta: 'Container metrics', visual: 'monitoring' },
+    { key: 'agents', permission: 'view_connected_agent', title: 'Connected Agents', value: connectedAgents.length, meta: `${totalManagedServers} managed server(s)`, visual: 'agents' },
+    { key: 'server-health', permission: 'view_server_info', title: 'Server Health', value: getAgentStatus(selectedServer).label, meta: selectedServer?.hostname || selectedServer?.server_ip || 'Application server', visual: 'health' },
+    { key: 'volumes', permission: 'view_volumes', title: 'Volumes', value: volumes.length, meta: 'Persistent storage', visual: 'volumes' },
+    { key: 'networks', permission: 'view_networks', title: 'Networks', value: networks.length, meta: 'Connection fabric', visual: 'networks' },
+    { key: 'images', permission: 'view_images', title: 'Images', value: images.length, meta: 'Build artifacts', visual: 'images' },
+    { key: 'deployments', permission: 'view_deployments', title: 'Deployments', value: deployments.length, meta: 'Compose applications', visual: 'deployments' },
+  ].filter((card) => canOperate(card.permission));
 
   return (
     <section className="home-panel dashboard-panel">
@@ -4174,6 +4234,15 @@ function DashboardVisual({ type }) {
         <span className="dv-pulse green" />
       </>
     ),
+    monitoring: (
+      <>
+        <span className="dv-health-core" />
+        <span className="dv-heartbeat beat-a" />
+        <span className="dv-heartbeat beat-b" />
+        <span className="dv-monitor-ring" />
+        <span className="dv-pulse green" />
+      </>
+    ),
     volumes: (
       <>
         <span className="dv-cylinder cyl-a" />
@@ -4242,6 +4311,10 @@ function UserProfilePanel({
   onConfirmNewPasswordChange,
   onChangePassword,
 }) {
+  const passwordsEntered = Boolean(newPassword && confirmNewPassword);
+  const passwordsMatch = passwordsEntered && newPassword === confirmNewPassword;
+  const passwordReady = passwordsMatch && newPassword.length >= 8;
+
   return (
     <section className="home-panel user-profile-panel">
       <PanelIntro
@@ -4283,8 +4356,19 @@ function UserProfilePanel({
                 onChange={(event) => onConfirmNewPasswordChange(event.target.value)}
                 autoComplete="new-password"
                 minLength={8}
+                aria-invalid={passwordsEntered && !passwordsMatch}
+                aria-describedby="password-match-status"
                 disabled={passwordLoading}
               />
+              {passwordsEntered && (
+                <small
+                  id="password-match-status"
+                  className={`password-match-status ${passwordsMatch ? 'match' : 'mismatch'}`}
+                  role="status"
+                >
+                  {passwordsMatch ? 'Passwords match.' : 'Passwords do not match.'}
+                </small>
+              )}
             </label>
           </div>
 
@@ -4294,7 +4378,7 @@ function UserProfilePanel({
             <button
               type="submit"
               className="home-primary-button"
-              disabled={passwordLoading || !currentPassword || !newPassword || !confirmNewPassword}
+              disabled={passwordLoading || !currentPassword || !passwordReady}
             >
               {passwordLoading ? 'Updating password...' : 'Update password'}
             </button>
@@ -4661,7 +4745,7 @@ function CreateContainerPanel({
                   type="text"
                   value={containerDockerfilePath}
                   onChange={(event) => onContainerDockerfilePathChange(event.target.value)}
-                  placeholder="/home/vitel/vitel-container/Dockerfile"
+                  placeholder="/home/user/project/Dockerfile"
                   disabled={containerLoading}
                 />
                 <button
@@ -5271,7 +5355,7 @@ function CreateContainerPanel({
       )}
 
           {containerOutputOpen && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal"
             role="dialog"
@@ -5294,11 +5378,11 @@ function CreateContainerPanel({
             </div>
             <pre>{containerCreateOutput || 'No output yet.'}</pre>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {containerInspectOutputOpen && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal container-inspect-modal"
             role="dialog"
@@ -5320,11 +5404,11 @@ function CreateContainerPanel({
             </div>
             <pre>{containerInspectOutput || 'No inspect output.'}</pre>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {containerLogOutputOpen && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal"
             role="dialog"
@@ -5347,11 +5431,11 @@ function CreateContainerPanel({
             </div>
             <pre>{containerLogOutput || 'No output yet.'}</pre>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {connectModalOpen && activeShellContainer && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal connect-modal terminal-modal container-terminal-modal"
             role="dialog"
@@ -5398,11 +5482,11 @@ function CreateContainerPanel({
               )}
             </div>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {volumeConnectModalOpen && activeVolumeShell && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal connect-modal terminal-modal volume-terminal-modal"
             role="dialog"
@@ -5449,11 +5533,11 @@ function CreateContainerPanel({
               )}
             </div>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {volumeGuiModalOpen && activeVolumeGui && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal connect-modal volume-gui-modal"
             role="dialog"
@@ -5521,12 +5605,12 @@ function CreateContainerPanel({
               </div>
             </div>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
 
       {(volumeFilePreviewLoading || volumeFilePreview || volumeFilePreviewMessage) && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal connect-modal volume-file-preview-modal"
             role="dialog"
@@ -5572,7 +5656,7 @@ function CreateContainerPanel({
               )}
             </div>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
     </section>
@@ -6095,18 +6179,24 @@ function NetworkPanel({
                   {networks.map((network) => {
                     const name = getNetworkName(network);
                     const id = getNetworkId(network);
-                    const selected = selectedNetworks.some((selectedNetwork) => getNetworkId(selectedNetwork) === id);
+                    const protectedNetwork = isProtectedDockerNetwork(network);
+                    const selected = !protectedNetwork
+                      && selectedNetworks.some((selectedNetwork) => getNetworkId(selectedNetwork) === id);
 
                     return (
                       <tr key={id || name} className={selected ? 'selected' : ''}>
                         <td>
-                          <input
-                            type="checkbox"
-                            name="selected-network"
-                            checked={selected}
-                            onChange={() => onSelectedNetworkChange(network)}
-                            aria-label={`Select ${name}`}
-                          />
+                          {protectedNetwork ? (
+                            <span className="protected-network-label">Protected</span>
+                          ) : (
+                            <input
+                              type="checkbox"
+                              name="selected-network"
+                              checked={selected}
+                              onChange={() => onSelectedNetworkChange(network)}
+                              aria-label={"Select " + name}
+                            />
+                          )}
                         </td>
                         <td><ResourceAttachmentIndicator attached={isNetworkAttached(name, attachmentContainers)} label={name} /></td>
                         <td>{id}</td>
@@ -6194,6 +6284,10 @@ function getAgentStatus(agent) {
 
 function getNetworkName(network) {
   return network?.Name || network?.name || 'Unavailable';
+}
+
+function isProtectedDockerNetwork(network) {
+  return ['bridge', 'host', 'none'].includes(getNetworkName(network).trim().toLowerCase());
 }
 
 function getNetworkId(network) {
@@ -6385,7 +6479,7 @@ function DeploymentPanel({
                 type="text"
                 value={composeFilePath}
                 onChange={(event) => onComposeFilePathChange(event.target.value)}
-                placeholder="/home/vitel/vitel-container/docker-compose.yaml"
+                placeholder="/home/user/project/docker-compose.yaml"
                 disabled={deploymentLoading}
               />
               <button
@@ -6755,7 +6849,7 @@ function DeploymentPanel({
       )}
 
       {deploymentOutputOpen && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal"
             role="dialog"
@@ -6778,11 +6872,11 @@ function DeploymentPanel({
             </div>
             <pre>{deploymentOutput || 'No output yet.'}</pre>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {containerLogOutputOpen && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal"
             role="dialog"
@@ -6804,7 +6898,7 @@ function DeploymentPanel({
             </div>
             <pre>{containerLogOutput || 'No output yet.'}</pre>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {composeBrowserOpen && (
@@ -6819,7 +6913,7 @@ function DeploymentPanel({
       )}
 
       {connectModalOpen && activeShellContainer && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal connect-modal terminal-modal"
             role="dialog"
@@ -6869,7 +6963,7 @@ function DeploymentPanel({
               )}
             </div>
           </div>
-        </div>
+        </OutputPortal>
       )}
     </section>
   );
@@ -7194,7 +7288,7 @@ function BuildImagePanel({
                 type="text"
                 value={dockerfilePath}
                 onChange={(event) => onDockerfilePathChange(event.target.value)}
-                placeholder="/home/vitel/vitel-container/Dockerfile"
+                placeholder="/home/user/project/Dockerfile"
                 disabled={buildLoading}
               />
               <button
@@ -7323,7 +7417,7 @@ function BuildImagePanel({
       )}
 
       {outputOpen && (
-        <div className="output-modal-layer" role="presentation">
+        <OutputPortal>
           <div
             className="output-modal"
             role="dialog"
@@ -7346,7 +7440,7 @@ function BuildImagePanel({
             </div>
             <pre>{buildOutput || 'No output yet.'}</pre>
           </div>
-        </div>
+        </OutputPortal>
       )}
 
       {fileBrowserOpen && (
@@ -7552,7 +7646,12 @@ function AgentPanel({
   onOpenAgentDeleteOutput,
   onCloseAgentDeleteOutput,
   onOutputModalDragStart,
+  canOperate = () => true,
 }) {
+  const canCreateAgent = canOperate('create_agent');
+  const canManageAgents = canOperate('manage_agents');
+  const canDeleteAgents = canOperate('delete_agents');
+  const effectiveAgentTab = agentTab === 'create' && !canCreateAgent ? 'delete' : agentTab;
   const deletableAgents = agents.filter((agent) => agent.id !== 'local' && !agent.is_deleted);
   const restorableAgents = (deletedAgents || []).filter((agent) => agent.id !== 'local' && agent.is_deleted);
   const [agentOutputCopyMessage, setAgentOutputCopyMessage] = useState('');
@@ -7617,30 +7716,34 @@ function AgentPanel({
       {mode === 'create' ? (
         <>
           <div className="resource-tabs" role="tablist" aria-label="Agent actions">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={agentTab === 'create'}
-              className={agentTab === 'create' ? 'active' : ''}
-              onClick={() => onAgentTabChange('create')}
-            >
-              New agent
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={agentTab === 'delete'}
-              className={agentTab === 'delete' ? 'active' : ''}
-              onClick={() => {
-                onAgentTabChange('delete');
-                onRefreshAgents();
-              }}
-            >
-              Manage agents
-            </button>
+            {canCreateAgent && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={effectiveAgentTab === 'create'}
+                className={effectiveAgentTab === 'create' ? 'active' : ''}
+                onClick={() => onAgentTabChange('create')}
+              >
+                New agent
+              </button>
+            )}
+            {(canManageAgents || canDeleteAgents) && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={effectiveAgentTab === 'delete'}
+                className={effectiveAgentTab === 'delete' ? 'active' : ''}
+                onClick={() => {
+                  onAgentTabChange('delete');
+                  onRefreshAgents();
+                }}
+              >
+                Manage agents
+              </button>
+            )}
           </div>
 
-          {agentTab === 'create' ? (
+          {effectiveAgentTab === 'create' ? (
             <form className="agent-form" onSubmit={onCreateAgent} autoComplete="off">
               <div className="agent-form-grid">
                 <label>
@@ -7743,7 +7846,7 @@ function AgentPanel({
                 <button
                   type="button"
                   className="home-danger-button"
-                  disabled={!selectedAgentId || agentDeleteLoading || agentRedeployLoading}
+                  disabled={!canDeleteAgents || !selectedAgentId || agentDeleteLoading || agentRedeployLoading}
                   onClick={() => onDeleteAgent(selectedAgentId)}
                 >
                   {agentDeleteLoading ? 'Deleting agent...' : 'Delete selected agent'}
@@ -7751,7 +7854,7 @@ function AgentPanel({
                 <button
                   type="button"
                   className="home-primary-button"
-                  disabled={!selectedDeletedAgentId || agentDeleteLoading || agentRedeployLoading}
+                  disabled={!canManageAgents || !selectedDeletedAgentId || agentDeleteLoading || agentRedeployLoading}
                   onClick={() => onRedeployAgent(selectedDeletedAgentId)}
                 >
                   {agentRedeployLoading ? 'Redeploying agent...' : 'Redeploy selected agent'}
@@ -7771,7 +7874,7 @@ function AgentPanel({
           )}
 
           {agentCreateOutputOpen && (
-            <div className="output-modal-layer" role="presentation">
+            <OutputPortal>
               <div
                 className="output-modal agent-setup-output-modal"
                 role="dialog"
@@ -7807,11 +7910,11 @@ function AgentPanel({
                 </div>
                 <pre>{agentCreateOutput || 'No output yet.'}</pre>
               </div>
-            </div>
+            </OutputPortal>
           )}
 
           {agentDeleteOutputOpen && (
-            <div className="output-modal-layer" role="presentation">
+            <OutputPortal>
               <div
                 className="output-modal"
                 role="dialog"
@@ -7847,7 +7950,7 @@ function AgentPanel({
                 </div>
                 <pre>{agentDeleteOutput || 'No output yet.'}</pre>
               </div>
-            </div>
+            </OutputPortal>
           )}
         </>
       ) : (
@@ -7917,13 +8020,22 @@ function AgentPanel({
 
 
 function OperationSelect({ operations, value, onChange, disabled }) {
+  const [category, setCategory] = useState('All');
   const selectedValues = Array.isArray(value) ? value : [];
   const selected = new Set(selectedValues);
   const operationCodes = operations.map((operation) => operation.code);
+  const categories = ['All', ...Array.from(new Set(operations.map((operation) => operation.category || 'Other')))];
+  const visibleOperations = category === 'All'
+    ? operations
+    : operations.filter((operation) => (operation.category || 'Other') === category);
+  const selectableVisibleCodes = visibleOperations
+    .map((operation) => operation.code)
+    .filter((code) => code !== 'administrator');
   const administratorSelected = selected.has('administrator');
   const selectedCount = operationCodes.filter((code) => selected.has(code)).length;
   const selectedSummary = administratorSelected ? 'Full access' : `${selectedCount} selected`;
-  const allSelected = operations.length > 0 && (administratorSelected || selectedCount === operations.length);
+  const shownSelected = selectableVisibleCodes.length > 0
+    && selectableVisibleCodes.every((code) => selected.has(code));
 
   const handleOperationChange = (code, checked) => {
     if (code === 'administrator') {
@@ -7932,25 +8044,48 @@ function OperationSelect({ operations, value, onChange, disabled }) {
     }
 
     const next = new Set(selectedValues.filter((selectedCode) => selectedCode !== 'administrator'));
-    if (checked) {
-      next.add(code);
-    } else {
-      next.delete(code);
-    }
+    if (checked) next.add(code);
+    else next.delete(code);
     onChange(operationCodes.filter((operationCode) => next.has(operationCode)));
+  };
+
+  const selectShown = () => {
+    const next = new Set(selectedValues.filter((code) => code !== 'administrator'));
+    selectableVisibleCodes.forEach((code) => next.add(code));
+    onChange(operationCodes.filter((code) => next.has(code)));
+  };
+
+  const clearShown = () => {
+    if (category === 'All') {
+      onChange([]);
+      return;
+    }
+    const hiddenCodes = new Set(selectableVisibleCodes);
+    onChange(selectedValues.filter((code) => !hiddenCodes.has(code) && code !== 'administrator'));
   };
 
   return (
     <div className={`rbac-operation-picker${disabled ? ' disabled' : ''}`}>
       <div className="rbac-operation-toolbar">
-        <span>{selectedSummary}</span>
-        <div>
-          <button type="button" className="home-secondary-button" onClick={() => onChange(['administrator'])} disabled={disabled || allSelected || !operations.length}>Select all</button>
-          <button type="button" className="home-secondary-button" onClick={() => onChange([])} disabled={disabled || selectedCount === 0}>Clear</button>
+        <div className="rbac-operation-filter">
+          <label htmlFor={`permission-category-${category.replace(/\s+/g, '-').toLowerCase()}`}>Category</label>
+          <select
+            id={`permission-category-${category.replace(/\s+/g, '-').toLowerCase()}`}
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+            disabled={disabled}
+          >
+            {categories.map((categoryName) => <option value={categoryName} key={categoryName}>{categoryName}</option>)}
+          </select>
+          <span>{selectedSummary}</span>
+        </div>
+        <div className="rbac-operation-toolbar-actions">
+          <button type="button" className="home-secondary-button" onClick={selectShown} disabled={disabled || shownSelected || !selectableVisibleCodes.length}>Select shown</button>
+          <button type="button" className="home-secondary-button" onClick={clearShown} disabled={disabled || selectedCount === 0}>Clear shown</button>
         </div>
       </div>
-      <div className="rbac-operation-options" role="group" aria-label="Operations list">
-        {operations.length ? operations.map((operation) => {
+      <div className="rbac-operation-options" role="group" aria-label={`${category} operations`}>
+        {visibleOperations.length ? visibleOperations.map((operation) => {
           const checked = selected.has(operation.code);
           return (
             <label className={`rbac-operation-option${checked ? ' selected' : ''}`} key={operation.code}>
@@ -8051,10 +8186,10 @@ function RbacPanel({
               </select>
               <small className="field-help">Choose a group to inherit its operations. Direct operations are disabled while a group is selected.</small>
             </label>
-            <label className="rbac-operation-field">
-              <span>Allowed operations</span>
+            <div className="rbac-operation-field">
+              <span className="rbac-operation-field-label">Allowed operations</span>
               <OperationSelect operations={operations} value={rbacUserOperations} onChange={onUserOperationsChange} disabled={rbacLoading || Boolean(rbacUserGroupId)} />
-            </label>
+            </div>
           </div>
           <div className="container-actions">
             <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacUsername.trim() || !rbacPassword || !rbacConfirmPassword}>Create user</button>
@@ -8064,7 +8199,7 @@ function RbacPanel({
         <form className="agent-form rbac-form" onSubmit={onCreateGroup}>
           <div className="agent-form-grid">
             <label><span>Group name</span><input value={rbacGroupName} onChange={(event) => onGroupNameChange(event.target.value)} disabled={rbacLoading} /></label>
-            <label className="rbac-operation-field"><span>Allowed operations</span><OperationSelect operations={operations} value={rbacGroupOperations} onChange={onGroupOperationsChange} disabled={rbacLoading} /></label>
+            <div className="rbac-operation-field"><span className="rbac-operation-field-label">Allowed operations</span><OperationSelect operations={operations} value={rbacGroupOperations} onChange={onGroupOperationsChange} disabled={rbacLoading} /></div>
           </div>
           <div className="container-actions">
             <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacGroupName.trim()}>Create group</button>

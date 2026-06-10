@@ -7536,3 +7536,107 @@ input[type="checkbox"] {
     grid-column: 2;
   }
 }
+
+.protected-network-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 4px;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.5);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Categorized RBAC operation picker. */
+.rbac-operation-field {
+  display: grid;
+  gap: 8px;
+}
+
+.rbac-operation-field-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.rbac-operation-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rbac-operation-filter label {
+  color: #334155;
+  font-weight: 800;
+}
+
+.rbac-operation-filter select {
+  width: auto;
+  min-width: 170px;
+  max-width: 100%;
+  min-height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 32px 6px 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font: inherit;
+}
+
+.rbac-operation-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rbac-operation-options {
+  align-items: start;
+}
+
+.rbac-operation-option {
+  align-self: stretch;
+}
+
+.home-user-card:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+@media (max-width: 720px) {
+  .rbac-operation-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rbac-operation-toolbar-actions {
+    justify-content: flex-start;
+  }
+}
+
+.password-match-status {
+  display: block;
+  min-height: 20px;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.password-match-status.match {
+  color: #15803d;
+}
+
+.password-match-status.mismatch {
+  color: #b91c1c;
+}
+
+.user-profile-form input[aria-invalid="true"] {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
+}

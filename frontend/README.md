@@ -34,9 +34,9 @@ npm run build
 
 ## Environment Variables
 
-Create a `.env` file based on `.env.example`:
+Create a `.env` file based on `.env.example`. When using Docker Compose, keep `VITE_API_BASE_URL` empty so browser requests use the built-in same-origin `/api` proxy. For standalone frontend development, set `VITE_API_PROXY_TARGET` to the backend address.
 
-```
-VITE_API_URL=http://localhost:8000/api
-VITE_API_BASE_URL=http://localhost:8000
+```dotenv
+VITE_API_BASE_URL=
+VITE_API_PROXY_TARGET=http://localhost:8000
 ```

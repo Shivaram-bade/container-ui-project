@@ -74,23 +74,35 @@ TERMINAL_CONTROL_SEQUENCE_RE = re.compile(
 ADMINISTRATOR_OPERATION = 'administrator'
 
 OPERATION_PERMISSIONS = [
-    {'code': ADMINISTRATOR_OPERATION, 'label': 'administrator - full access'},
-    {'code': 'create_rbac_user', 'label': 'RBAC create users'},
-    {'code': 'create_rbac_group', 'label': 'RBAC create groups'},
-    {'code': 'create_agent', 'label': 'create agent'},
-    {'code': 'view_connected_agent', 'label': 'connected agent'},
-    {'code': 'view_server_info', 'label': 'server info'},
-    {'code': 'build_images', 'label': 'build images permission to a user'},
-    {'code': 'create_container', 'label': 'create a container'},
-    {'code': 'delete_container', 'label': 'delete container'},
-    {'code': 'delete_images', 'label': 'delete images'},
-    {'code': 'create_network', 'label': 'create a network'},
-    {'code': 'create_volume', 'label': 'create avolume'},
-    {'code': 'delete_network', 'label': 'delete a network'},
-    {'code': 'delete_volume', 'label': 'delete a volume'},
-    {'code': 'connect_container', 'label': 'connect to container permissions'},
-    {'code': 'create_deployment', 'label': 'create deployment'},
-    {'code': 'delete_deployment', 'label': 'delete deployment'},
+    {"code": ADMINISTRATOR_OPERATION, "label": "Administrator - full access", "category": "Administration"},
+    {"code": "create_rbac_user", "label": "Create new user", "category": "Administration"},
+    {"code": "create_rbac_group", "label": "Create new group", "category": "Administration"},
+    {"code": "change_password", "label": "Change password", "category": "Account"},
+    {"code": "view_server_info", "label": "Server health", "category": "Monitoring"},
+    {"code": "view_monitoring", "label": "Container monitoring", "category": "Monitoring"},
+    {"code": "view_running_containers", "label": "Running containers", "category": "Containers"},
+    {"code": "view_stopped_containers", "label": "Stopped containers", "category": "Containers"},
+    {"code": "view_recycle_bin", "label": "Container recycle bin", "category": "Containers"},
+    {"code": "create_container", "label": "Create container", "category": "Containers"},
+    {"code": "delete_container", "label": "Delete container", "category": "Containers"},
+    {"code": "connect_container", "label": "Connect to container", "category": "Containers"},
+    {"code": "view_images", "label": "Existing images", "category": "Images"},
+    {"code": "build_images", "label": "Build images", "category": "Images"},
+    {"code": "delete_images", "label": "Delete images", "category": "Images"},
+    {"code": "view_networks", "label": "Existing networks", "category": "Networks"},
+    {"code": "create_network", "label": "Create network", "category": "Networks"},
+    {"code": "delete_network", "label": "Delete network", "category": "Networks"},
+    {"code": "view_volumes", "label": "Existing volumes", "category": "Volumes"},
+    {"code": "create_volume", "label": "Create volume", "category": "Volumes"},
+    {"code": "delete_volume", "label": "Delete volume", "category": "Volumes"},
+    {"code": "view_deployments", "label": "Existing deployments", "category": "Deployments"},
+    {"code": "create_deployment", "label": "Create deployment", "category": "Deployments"},
+    {"code": "delete_deployment", "label": "Delete deployment", "category": "Deployments"},
+    {"code": "registry_deploy", "label": "Registry deploy", "category": "Deployments"},
+    {"code": "view_connected_agent", "label": "Connected agents", "category": "Agents"},
+    {"code": "create_agent", "label": "Create agent", "category": "Agents"},
+    {"code": "manage_agents", "label": "Manage agents", "category": "Agents"},
+    {"code": "delete_agents", "label": "Delete agents", "category": "Agents"},
 ]
 OPERATION_CODES = {operation['code'] for operation in OPERATION_PERMISSIONS}
 
@@ -152,6 +164,24 @@ def user_has_operation(user, operation):
 
 def user_has_any_operation(user, operations):
     return bool(set(operations) & get_user_operation_codes(user))
+
+
+def user_can_view_running_containers(user):
+    return user_has_any_operation(user, [
+        'view_running_containers', 'delete_container', 'connect_container', 'view_monitoring',
+    ])
+
+
+def user_can_view_stopped_containers(user):
+    return user_has_any_operation(user, [
+        'view_stopped_containers', 'create_container', 'delete_container', 'connect_container', 'view_monitoring',
+    ])
+
+
+def docker_summary_is_running(container):
+    state = str(container.get('State') or container.get('state') or '').strip().lower()
+    status_text = str(container.get('Status') or container.get('status') or '').strip().lower()
+    return state == 'running' or status_text.startswith('up')
 
 
 def require_operation(operation):
@@ -420,12 +450,15 @@ def get_controller_base_url(request):
     request_host = request.get_host().split(':')[0]
     internal_hosts = {'backend', 'vitel-backend', 'localhost', '127.0.0.1'}
 
+    public_port = os.getenv('VITEL_BACKEND_PUBLIC_PORT', '8000').strip() or '8000'
+    port_suffix = f':{public_port}'
+
     if browser_hostname and request_host in internal_hosts:
         scheme = parsed_origin.scheme if parsed_origin and parsed_origin.scheme else request.scheme
-        return f'{scheme}://{browser_hostname}:8000'
+        return f'{scheme}://{browser_hostname}{port_suffix}'
 
     if parsed_origin and parsed_origin.hostname and request_host in {'backend', 'vitel-backend'}:
-        return f'{parsed_origin.scheme}://{parsed_origin.hostname}:8000'
+        return f'{parsed_origin.scheme}://{parsed_origin.hostname}{port_suffix}'
 
     return request.build_absolute_uri('/').rstrip('/')
 
@@ -3435,7 +3468,14 @@ def serialize_local_agent(request):
 @permission_classes([IsAuthenticated])
 def agents(request):
     """Create agents and list connected agent summaries."""
-    if request.method == 'GET' and not user_has_any_operation(request.user, ['view_connected_agent', 'create_agent', 'create_container', 'delete_container', 'connect_container', 'build_images', 'delete_images', 'create_network', 'delete_network', 'create_volume', 'delete_volume', 'create_deployment', 'delete_deployment']):
+    if request.method == 'GET' and not user_has_any_operation(request.user, [
+        'view_connected_agent', 'create_agent', 'manage_agents', 'delete_agents',
+        'view_running_containers', 'view_stopped_containers', 'view_recycle_bin',
+        'create_container', 'delete_container', 'connect_container', 'view_monitoring',
+        'view_images', 'build_images', 'delete_images', 'view_networks', 'create_network',
+        'delete_network', 'view_volumes', 'create_volume', 'delete_volume',
+        'view_deployments', 'create_deployment', 'delete_deployment', 'registry_deploy', 'view_server_info',
+    ]):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
@@ -3460,10 +3500,12 @@ def agents(request):
             'deleted_agents': AgentSerializer(deleted_agents, many=True).data,
         })
 
-    if not user_has_operation(request.user, 'create_agent'):
+    if request.method == 'DELETE' and not user_has_operation(request.user, 'delete_agents'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
 
     redeploy_agent_id = request.data.get('redeploy_id')
+    if redeploy_agent_id and not user_has_operation(request.user, 'manage_agents'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if redeploy_agent_id:
         try:
             agent = Agent.objects.get(owner=request.user, id=redeploy_agent_id)
@@ -3658,6 +3700,9 @@ def agents(request):
             'output': result['output'] or f'Agent {agent_data["name"]} deleted.',
             'remote_cleanup_skipped': remote_cleanup_skipped,
         }, status=status.HTTP_200_OK)
+
+    if not user_has_operation(request.user, 'create_agent'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
 
     name = request.data.get('name', '').strip()
     server_ip = request.data.get('server_ip', '').strip()
@@ -3953,6 +3998,8 @@ def normalize_deploy_container_name(value, image_name):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def registry_images(request):
+    if not user_has_operation(request.user, 'registry_deploy'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     try:
         pull_host = get_registry_pull_host_for_request(request)
         images = sync_registry_images(owner=request.user, pull_host=pull_host)
@@ -3965,6 +4012,8 @@ def registry_images(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def registry_tags(request):
+    if not user_has_operation(request.user, 'registry_deploy'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     repository_name = str(request.query_params.get('image') or request.query_params.get('repository') or '').strip()
     if not repository_name:
         try:
@@ -3994,7 +4043,7 @@ def registry_tags(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def registry_deploy(request):
-    if not user_has_operation(request.user, 'create_deployment'):
+    if not user_has_operation(request.user, 'registry_deploy'):
         return Response({'success': False, 'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
 
     agent_id = request.data.get('agent_id') or request.data.get('server_id')
@@ -4054,6 +4103,10 @@ def manual_create_container(request):
     if request.method == 'POST' and not user_has_operation(request.user, 'create_container'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'GET':
+        can_view_running = user_can_view_running_containers(request.user)
+        can_view_stopped = user_can_view_stopped_containers(request.user)
+        if not (can_view_running or can_view_stopped):
+            return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
         agent, password, remote_agent, error_response = get_docker_target_context(request)
         if error_response:
             return error_response
@@ -4061,9 +4114,14 @@ def manual_create_container(request):
             'docker', 'ps', '-a',
             '--format', '{{json .}}',
         ])
+        containers = parse_json_lines(result['output']) if result['success'] else []
+        if not can_view_running:
+            containers = [container for container in containers if not docker_summary_is_running(container)]
+        if not can_view_stopped:
+            containers = [container for container in containers if docker_summary_is_running(container)]
         return Response({
             **result,
-            'containers': parse_json_lines(result['output']) if result['success'] else [],
+            'containers': containers,
         }, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
 
     image = request.data.get('image', '').strip()
@@ -4120,6 +4178,8 @@ def manual_create_container(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def container_detail(request):
+    if not (user_can_view_running_containers(request.user) or user_can_view_stopped_containers(request.user)):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     """Get container details (inspect) including networks and volumes."""
     container_id = request.GET.get('id', '').strip()
     
@@ -4265,12 +4325,18 @@ def build_container_monitoring_record(container_data, stats_data=None):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def container_monitoring(request):
-    # Return inspect-backed inventory and live stats for one Docker container.
+    # Return lightweight inventory for attachment indicators and detailed stats for Monitoring.
+    container_id = str(request.GET.get('id') or '').strip()
+    if container_id and not user_has_operation(request.user, 'view_monitoring'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+    if not container_id and not user_has_any_operation(request.user, [
+        'view_monitoring', 'view_images', 'view_networks', 'view_volumes',
+    ]):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     agent, password, remote_agent, error_response = get_docker_target_context(request)
     if error_response:
         return error_response
 
-    container_id = str(request.GET.get("id") or "").strip()
     if container_id:
         inspect_result = run_target_docker_command(
             agent, password, remote_agent,
@@ -4658,6 +4724,8 @@ def container_action(request):
 @api_view(['GET', 'POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def container_recycle_bin(request):
+    if request.method == 'GET' and not user_has_operation(request.user, 'view_recycle_bin'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'GET':
         records = RecycledContainer.objects.filter(owner=request.user, restored=False).select_related('agent')
         return Response({
@@ -5215,6 +5283,8 @@ def shell_session(request):
 @permission_classes([IsAuthenticated])
 def network(request):
     """List, create, or delete Docker networks."""
+    if request.method == 'GET' and not user_has_any_operation(request.user, ['view_networks', 'create_network', 'create_container', 'create_deployment']):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'POST' and not user_has_operation(request.user, 'create_network'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'DELETE' and not user_has_operation(request.user, 'delete_network'):
@@ -5243,6 +5313,18 @@ def network(request):
                 'error': 'Network name or ID is required.',
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        inspect_result = run_target_docker_command(agent, password, remote_agent, [
+            'docker', 'network', 'inspect', target, '--format', '{{.Name}}',
+        ])
+        if not inspect_result['success']:
+            return Response(inspect_result, status=status.HTTP_400_BAD_REQUEST)
+
+        inspected_name = inspect_result['output'].splitlines()[0].strip().lower()
+        if inspected_name in {'bridge', 'host', 'none'}:
+            return Response({
+                'success': False,
+                'error': f'Docker built-in network "{inspected_name}" is protected and cannot be deleted.',
+            }, status=status.HTTP_400_BAD_REQUEST)
         result = run_target_docker_command(agent, password, remote_agent, ['docker', 'network', 'rm', target])
         return Response(result, status=status.HTTP_200_OK if result['success'] else status.HTTP_400_BAD_REQUEST)
 
@@ -5280,6 +5362,8 @@ def network(request):
 @permission_classes([IsAuthenticated])
 def volume(request):
     """List, create, or delete Docker volumes."""
+    if request.method == 'GET' and not user_has_any_operation(request.user, ['view_volumes', 'create_volume', 'create_container', 'create_deployment']):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'POST' and not user_has_operation(request.user, 'create_volume'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'DELETE' and not user_has_operation(request.user, 'delete_volume'):
@@ -5494,6 +5578,8 @@ def browse_compose_files(request):
 @permission_classes([IsAuthenticated])
 def deployments(request):
     """List, create, or delete Compose deployments."""
+    if request.method == 'GET' and not user_has_any_operation(request.user, ['view_deployments', 'create_deployment', 'delete_deployment']):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'GET':
         return Response({
             'deployments': [
@@ -5639,6 +5725,8 @@ def stop_deployment(request, job_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def deployment_detail(request, deployment_id=None):
+    if not (user_has_any_operation(request.user, ['view_deployments', 'create_deployment', 'delete_deployment'])):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     deployment_id = deployment_id or request.query_params.get('id')
     deployment = get_deployment_for_user(request.user, deployment_id)
     if not deployment:
@@ -5688,6 +5776,8 @@ def deployment_detail(request, deployment_id=None):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def container_logs(request):
+    if not (user_can_view_running_containers(request.user) or user_can_view_stopped_containers(request.user)):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     container_id = request.GET.get('id', '').strip()
     if not container_id:
         return Response({'error': 'Container ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -5784,6 +5874,8 @@ def run_build_job(job_id, command, image_name):
 @permission_classes([IsAuthenticated])
 def build_image(request):
     """List, build, or delete Docker images."""
+    if request.method == 'GET' and not user_has_any_operation(request.user, ['view_images', 'build_images', 'create_container']):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'POST' and not user_has_operation(request.user, 'build_images'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     if request.method == 'DELETE' and not user_has_operation(request.user, 'delete_images'):
@@ -6133,6 +6225,8 @@ def user_detail(request):
 @permission_classes([IsAuthenticated])
 def change_password(request):
     """Update the signed-in user's password after checking the current password."""
+    if not user_has_operation(request.user, 'change_password'):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
     user = request.user
     current_password = request.data.get('current_password', '')
     new_password = request.data.get('new_password', '')

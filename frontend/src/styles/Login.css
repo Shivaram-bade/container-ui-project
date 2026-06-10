@@ -758,6 +758,25 @@
   background: linear-gradient(180deg, rgba(0, 255, 198, 0.78), transparent);
 }
 
+.repair-drone > strong {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  border: 1px solid rgba(84, 225, 211, 0.34);
+  border-radius: 4px;
+  background: rgba(4, 13, 24, 0.82);
+  color: #bffdf5;
+  box-shadow: 0 0 12px rgba(24, 183, 160, 0.2);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .drone-a { left: 12vw; top: 24vh; animation: dronePathOne 19s ease-in-out infinite; }
 .drone-b { right: 16vw; top: 22vh; animation: dronePathTwo 23s ease-in-out infinite; }
 .drone-c { right: 24vw; top: 46vh; animation: dronePathThree 17s ease-in-out infinite; }
@@ -1963,4 +1982,53 @@
   background: linear-gradient(135deg, #118f82, #18b7a0) !important;
   color: #ffffff !important;
   box-shadow: 0 16px 34px rgba(24, 183, 160, 0.26) !important;
+}
+
+/* Password visibility control. */
+.login-password-field {
+  position: relative;
+}
+
+.login-card .login-password-field input {
+  padding-right: 48px;
+}
+
+.login-password-eye {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.login-password-eye:hover:not(:disabled),
+.login-password-eye:focus-visible {
+  outline: none;
+  background: rgba(24, 183, 160, 0.14);
+  color: #54e1d3;
+}
+
+.login-password-eye:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.login-password-eye svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }

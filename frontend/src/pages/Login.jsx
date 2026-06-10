@@ -239,9 +239,9 @@ function CargoShip({ className, labels }) {
 function RecoveryDrones() {
   return (
     <div className="recovery-drones">
-      <div className="repair-drone drone-a"><span /></div>
-      <div className="repair-drone drone-b"><span /></div>
-      <div className="repair-drone drone-c"><span /></div>
+      <div className="repair-drone drone-a"><strong>Readiness</strong><span /></div>
+      <div className="repair-drone drone-b"><strong>Liveness</strong><span /></div>
+      <div className="repair-drone drone-c"><strong>Startup</strong><span /></div>
       <div className="ai-monitor">
         <span>AI recovery</span>
         <strong>self-healing active</strong>
@@ -287,12 +287,29 @@ function SparkField() {
   );
 }
 
+function PasswordVisibilityIcon({ visible }) {
+  return visible ? (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.7a2 2 0 002.7 2.7" />
+      <path d="M9.9 4.2A10.8 10.8 0 0112 4c5.5 0 9 5.5 9 5.5a16.8 16.8 0 01-2.1 2.7" />
+      <path d="M6.6 6.7C4.3 8.2 3 10.5 3 10.5S6.5 16 12 16a9.8 9.8 0 003.1-.5" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 12s3.5-5.5 9-5.5S21 12 21 12s-3.5 5.5-9 5.5S3 12 3 12z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -324,6 +341,7 @@ export default function Login() {
 
   const switchMode = (nextIsLogin) => {
     setIsLogin(nextIsLogin);
+    setPasswordVisible(false);
     setError('');
     setSuccess('');
   };
@@ -426,7 +444,19 @@ export default function Login() {
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" disabled={loading} autoComplete={isLogin ? 'current-password' : 'new-password'} />
+            <div className="login-password-field">
+              <input type={passwordVisible ? 'text' : 'password'} id="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" disabled={loading} autoComplete={isLogin ? 'current-password' : 'new-password'} />
+              <button
+                type="button"
+                className="login-password-eye"
+                onClick={() => setPasswordVisible((visible) => !visible)}
+                disabled={loading}
+                aria-label={passwordVisible ? 'Hide password' : 'Show password'}
+                title={passwordVisible ? 'Hide password' : 'Show password'}
+              >
+                <PasswordVisibilityIcon visible={passwordVisible} />
+              </button>
+            </div>
           </div>
 
           {!isLogin && (

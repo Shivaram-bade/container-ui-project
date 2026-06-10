@@ -4,7 +4,7 @@ services:
     container_name: vitel-redis
     restart: always
     volumes:
-      - /opt/vitel/redis:/data
+      - ${VITEL_DATA_ROOT:-/opt/vitel}/redis:/data
     networks:
       - vitel-network
 
@@ -13,9 +13,9 @@ services:
     container_name: vitel-registry
     restart: always
     ports:
-      - "5000:5000"
+      - "${VITEL_REGISTRY_PORT:-5000}:5000"
     volumes:
-      - /opt/vitel/registry:/var/lib/registry
+      - ${VITEL_DATA_ROOT:-/opt/vitel}/registry:/var/lib/registry
     networks:
       - vitel-network
 
@@ -27,18 +27,26 @@ services:
     container_name: vitel-backend
     restart: always
     ports:
-      - "8000:8000"
+      - "${VITEL_BACKEND_PORT:-8000}:8000"
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
       VITEL_REGISTRY_INTERNAL_URL: http://registry:5000
-      VITEL_REGISTRY_PUSH_HOST: localhost:5000
+      VITEL_REGISTRY_PUSH_HOST: ${VITEL_REGISTRY_PUSH_HOST:-localhost:5000}
+      VITEL_REGISTRY_PORT: ${VITEL_REGISTRY_PORT:-5000}
+      VITEL_BACKEND_PUBLIC_PORT: ${VITEL_BACKEND_PORT:-8000}
+      VITEL_REGISTRY_PULL_HOST: ${VITEL_REGISTRY_PULL_HOST:-}
+      CONTROL_SERVER_URL: ${VITEL_CONTROL_SERVER_URL:-}
+      CONTROL_SERVER_WS_URL: ${VITEL_CONTROL_SERVER_WS_URL:-}
       VITEL_AGENT_REGISTRY_REPOSITORY: vitel-agent
       VITEL_AGENT_REGISTRY_TAG: v1
       VITEL_AGENT_SOURCE_IMAGE: container-ui-project-backend:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./backend/db.sqlite3:/app/db.sqlite3
-      - /home:/home:ro
-      - /root:/root:ro
+      - ${VITEL_DATABASE_PATH:-./backend/db.sqlite3}:/app/db.sqlite3
+      - ${VITEL_HOST_WORKSPACE_ROOT:-/home}:${VITEL_HOST_WORKSPACE_ROOT:-/home}:ro
+      - ${VITEL_HOST_ROOT_HOME:-/root}:${VITEL_HOST_ROOT_HOME:-/root}:ro
     depends_on:
       - redis
       - registry
@@ -62,7 +70,9 @@ services:
     container_name: vitel-frontend
     restart: always
     ports:
-      - "3000:3000"
+      - "${VITEL_FRONTEND_PORT:-3000}:3000"
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
     depends_on:
       backend:
         condition: service_healthy

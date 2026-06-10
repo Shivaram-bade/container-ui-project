@@ -2,6 +2,15 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
+import connectedAgentsDashboardImage from '../assets/dashboard/connected-agents.png';
+import deletedContainersDashboardImage from '../assets/dashboard/deleted-containers.png';
+import deploymentsDashboardImage from '../assets/dashboard/deployments-containers.png';
+import monitoringDashboardImage from '../assets/dashboard/monitoring-analytics.png';
+import networksDashboardImage from '../assets/dashboard/networks-mesh.png';
+import runningContainersDashboardImage from '../assets/dashboard/running-containers.png';
+import serverHealthDashboardImage from '../assets/dashboard/server-health-connection.png';
+import stoppedContainersDashboardImage from '../assets/dashboard/stopped-containers.png';
+import volumesDashboardImage from '../assets/dashboard/volumes-storage.png';
 import '../styles/Home.css';
 
 const manualActions = [
@@ -4192,75 +4201,65 @@ function DashboardVisual({ type }) {
   const scenes = {
     containers: (
       <>
-        <span className="dv-node node-a" />
-        <span className="dv-node node-b" />
-        <span className="dv-flow flow-a" />
-        <span className="dv-container c-a" />
-        <span className="dv-container c-b" />
-        <span className="dv-pulse green" />
+        <img className="dv-dashboard-image dv-running-containers-image" src={runningContainersDashboardImage} alt="" />
+        <span className="dv-running-wave wave-a" />
+        <span className="dv-running-wave wave-b" />
+        <span className="dv-running-status" />
       </>
     ),
     stopped: (
       <>
-        <span className="dv-node inactive node-a" />
-        <span className="dv-container inactive c-a" />
-        <span className="dv-container inactive c-b" />
-        <span className="dv-sleep-line line-a" />
-        <span className="dv-sleep-line line-b" />
+        <img className="dv-dashboard-image dv-stopped-containers-image" src={stoppedContainersDashboardImage} alt="" />
+        <span className="dv-stopped-shadow" />
+        <span className="dv-stopped-status" />
       </>
     ),
     deleted: (
       <>
-        <span className="dv-container inactive c-a" />
-        <span className="dv-container inactive c-b" />
-        <span className="dv-delete-bin" />
-        <span className="dv-sleep-line line-b" />
+        <img className="dv-dashboard-image dv-deleted-containers-image" src={deletedContainersDashboardImage} alt="" />
+        <span className="dv-fire-glow" />
+        <span className="dv-ember ember-a" />
+        <span className="dv-ember ember-b" />
       </>
     ),
     agents: (
       <>
-        <span className="dv-server rack-a" />
-        <span className="dv-server rack-b" />
-        <span className="dv-monitor-ring" />
-        <span className="dv-packet packet-a" />
-        <span className="dv-packet packet-b" />
+        <img className="dv-dashboard-image dv-connected-agents-image" src={connectedAgentsDashboardImage} alt="" />
+        <span className="dv-agent-signal signal-a" />
+        <span className="dv-agent-signal signal-b" />
+        <span className="dv-agent-signal signal-c" />
       </>
     ),
     health: (
       <>
-        <span className="dv-health-core" />
-        <span className="dv-heartbeat beat-a" />
-        <span className="dv-heartbeat beat-b" />
-        <span className="dv-pulse green" />
+        <img className="dv-dashboard-image dv-server-health-image" src={serverHealthDashboardImage} alt="" />
+        <span className="dv-connection-pulse pulse-a" />
+        <span className="dv-connection-pulse pulse-b" />
+        <span className="dv-connection-spark" />
       </>
     ),
     monitoring: (
       <>
-        <span className="dv-health-core" />
-        <span className="dv-heartbeat beat-a" />
-        <span className="dv-heartbeat beat-b" />
-        <span className="dv-monitor-ring" />
-        <span className="dv-pulse green" />
+        <img className="dv-dashboard-image dv-monitoring-image" src={monitoringDashboardImage} alt="" />
+        <span className="dv-monitoring-sheen" />
+        <span className="dv-monitoring-signal signal-a" />
+        <span className="dv-monitoring-signal signal-b" />
       </>
     ),
     volumes: (
       <>
-        <span className="dv-cylinder cyl-a" />
-        <span className="dv-cylinder cyl-b" />
-        <span className="dv-cylinder cyl-c" />
-        <span className="dv-disk-orbit" />
+        <img className="dv-dashboard-image dv-volumes-image" src={volumesDashboardImage} alt="" />
+        <span className="dv-volume-orbit" />
+        <span className="dv-volume-light light-a" />
+        <span className="dv-volume-light light-b" />
       </>
     ),
     networks: (
       <>
-        <span className="dv-link link-a" />
-        <span className="dv-link link-b" />
-        <span className="dv-link link-c" />
-        <span className="dv-node node-a" />
-        <span className="dv-node node-b" />
-        <span className="dv-node node-c" />
-        <span className="dv-packet packet-a" />
-        <span className="dv-packet packet-b" />
+        <img className="dv-dashboard-image dv-networks-image" src={networksDashboardImage} alt="" />
+        <span className="dv-network-packet packet-a" />
+        <span className="dv-network-packet packet-b" />
+        <span className="dv-network-flare" />
       </>
     ),
     images: (
@@ -4273,11 +4272,10 @@ function DashboardVisual({ type }) {
     ),
     deployments: (
       <>
-        <span className="dv-pipeline" />
-        <span className="dv-stage stage-a" />
-        <span className="dv-stage stage-b" />
-        <span className="dv-stage stage-c" />
-        <span className="dv-packet packet-a" />
+        <img className="dv-dashboard-image dv-deployments-image" src={deploymentsDashboardImage} alt="" />
+        <span className="dv-deployment-beam beam-a" />
+        <span className="dv-deployment-beam beam-b" />
+        <span className="dv-deployment-status" />
       </>
     ),
   };

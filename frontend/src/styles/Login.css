@@ -751,25 +751,26 @@
 
 .repair-drone span {
   position: absolute;
-  left: 19px;
+  left: 50%;
   top: 18px;
-  width: 2px;
-  height: 78px;
-  background: linear-gradient(180deg, rgba(0, 255, 198, 0.78), transparent);
+  width: 110px;
+  height: 90px;
+  transform: translateX(-50%);
+  clip-path: polygon(44% 0, 56% 0, 100% 100%, 0 100%);
+  background: linear-gradient(180deg, rgba(210, 255, 250, 0.62), rgba(76, 220, 211, 0.2) 68%, transparent);
+  filter: drop-shadow(0 0 8px rgba(84, 225, 211, 0.24));
+  pointer-events: none;
 }
 
 .repair-drone > strong {
   position: absolute;
+  z-index: 2;
   left: 50%;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
-  padding: 3px 7px;
-  border: 1px solid rgba(84, 225, 211, 0.34);
-  border-radius: 4px;
-  background: rgba(4, 13, 24, 0.82);
-  color: #bffdf5;
-  box-shadow: 0 0 12px rgba(24, 183, 160, 0.2);
-  font-size: 9px;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #d8fffa;
+  text-shadow: 0 0 5px rgba(0, 0, 0, 0.95), 0 0 8px rgba(24, 183, 160, 0.8);
+  font-size: 7px;
   font-weight: 900;
   line-height: 1;
   letter-spacing: 0;

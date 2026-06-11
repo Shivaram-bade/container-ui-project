@@ -8963,6 +8963,43 @@ input[type="checkbox"] {
   white-space: nowrap;
 }
 
+/* Keep page refresh and dashboard navigation aligned as one header action row. */
+.panel-intro-actions .refresh-action-button,
+.panel-intro-actions .dashboard-back-button {
+  position: static !important;
+  top: auto !important;
+  left: auto !important;
+  width: 180px !important;
+  inline-size: 180px !important;
+  min-width: 180px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  margin: 0 !important;
+  padding: 11px 18px !important;
+  align-self: center !important;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
+  white-space: nowrap !important;
+}
+
+@media (max-width: 700px) {
+  .panel-intro-actions:has(.refresh-action-button) {
+    display: grid !important;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .panel-intro-actions:has(.refresh-action-button) .refresh-action-button,
+  .panel-intro-actions:has(.refresh-action-button) .dashboard-back-button {
+    width: 100% !important;
+    inline-size: 100% !important;
+    min-width: 0 !important;
+    white-space: normal !important;
+  }
+}
+
 /* Dashboard host terminal: keep these final so theme layers cannot resize it. */
 .output-modal.dashboard-agent-terminal {
   display: flex;

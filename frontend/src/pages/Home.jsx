@@ -3694,6 +3694,14 @@ export default function Home() {
             outputModalPosition={outputModalPosition}
             onOutputModalDragStart={handleOutputModalDragStart}
             onContainerTabChange={setContainerTab}
+            onRefreshContainers={() => {
+              const serverId = getSelectedDockerServerId();
+              loadContainers(serverId);
+              loadNetworks(serverId);
+              loadVolumes(serverId);
+              loadImages(serverId);
+              if (containerTab === 'recyclebin') loadRecycledContainers();
+            }}
             onSelectContainer={handleSelectContainer}
             onContainerAction={handleContainerAction}
             onOpenRestoreContainer={handleOpenRestoreContainer}
@@ -3701,7 +3709,6 @@ export default function Home() {
             onCancelRestoreContainer={handleCancelRestoreContainer}
             onRestoreContainerServerIdChange={setRestoreContainerServerId}
             onRestoreContainerImageChange={setRestoreContainerImage}
-            onRefreshRecycleBin={loadRecycledContainers}
             onOpenDeleteRecycledContainer={handleOpenDeleteRecycledContainer}
             onConfirmDeleteRecycledContainer={handleConfirmDeleteRecycledContainer}
             onCancelDeleteRecycledContainer={handleCancelDeleteRecycledContainer}
@@ -4141,7 +4148,15 @@ function MonitoringPanel({
   return (
     <section className="home-panel monitoring-panel">
       <PanelIntro title="Container Monitoring" description="Cloud-style live visibility for every Docker container on the selected server.">
-        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={loading}>Refresh</button>
+        <button
+          type="button"
+          className="home-secondary-button refresh-action-button"
+          onClick={onRefresh}
+          disabled={loading}
+          title="Reload monitoring information from the selected server"
+        >
+          Refresh monitoring
+        </button>
       </PanelIntro>
 
       <div className="monitoring-toolbar">
@@ -4315,8 +4330,14 @@ function DashboardPanel({
         title="Dashboard"
         description="Select an agent and jump into the exact Docker resource you want to manage."
       >
-        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={loading}>
-          {loading ? 'Refreshing...' : 'Refresh'}
+        <button
+          type="button"
+          className="home-secondary-button refresh-action-button"
+          onClick={onRefresh}
+          disabled={loading}
+          title="Reload all dashboard information"
+        >
+          {loading ? 'Refreshing...' : 'Refresh dashboard'}
         </button>
       </PanelIntro>
 
@@ -4838,6 +4859,7 @@ function CreateContainerPanel({
   outputModalPosition,
   onOutputModalDragStart,
   onContainerTabChange,
+  onRefreshContainers,
   onSelectContainer,
   onContainerAction,
   onOpenRestoreContainer,
@@ -4845,7 +4867,6 @@ function CreateContainerPanel({
   onCancelRestoreContainer,
   onRestoreContainerServerIdChange,
   onRestoreContainerImageChange,
-  onRefreshRecycleBin,
   onOpenDeleteRecycledContainer,
   onConfirmDeleteRecycledContainer,
   onCancelDeleteRecycledContainer,
@@ -4953,7 +4974,19 @@ function CreateContainerPanel({
       <PanelIntro
         title="Containers"
         description="Create new containers or manage containers already running on the selected server."
-      />
+      >
+        {containerTab !== 'create' ? (
+          <button
+            type="button"
+            className="home-secondary-button refresh-action-button"
+            onClick={onRefreshContainers}
+            disabled={containersLoading || recycledContainersLoading}
+            title="Reload container and related resource information from the selected server"
+          >
+            {containersLoading || recycledContainersLoading ? 'Refreshing...' : 'Refresh containers'}
+          </button>
+        ) : null}
+      </PanelIntro>
       
       <div className="resource-tabs" role="tablist" aria-label="Container actions">
         <button
@@ -5309,9 +5342,6 @@ function CreateContainerPanel({
               <div className="containers-list">
                 <div className="resource-delete-toolbar">
                   <p>{selectedServerRecycledContainers.length} deleted container(s) available to restore.</p>
-                  <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshRecycleBin} disabled={recycledContainersLoading}>
-                    Refresh
-                  </button>
                 </div>
                 <div className="agent-grid">
                   {selectedServerRecycledContainers.map((container) => (
@@ -5910,7 +5940,15 @@ function CreateContainerPanel({
             <div className="volume-gui-body" onPointerDown={(event) => event.stopPropagation()}>
               <div className="volume-gui-toolbar">
                 <button type="button" className="home-secondary-button" onClick={onVolumeGuiUp} disabled={volumeGuiLoading || !volumeGuiPath}>Back</button>
-                <button type="button" className="home-secondary-button refresh-action-button" onClick={onVolumeGuiRefresh} disabled={volumeGuiLoading}>Refresh</button>
+                <button
+                  type="button"
+                  className="home-secondary-button refresh-action-button"
+                  onClick={onVolumeGuiRefresh}
+                  disabled={volumeGuiLoading}
+                  title="Reload files and folders in the current volume path"
+                >
+                  Refresh folder
+                </button>
                 <button type="button" className="home-secondary-button" onClick={onVolumeGuiNewFolder} disabled={volumeGuiLoading}>New folder</button>
                 <button type="button" className="home-primary-button" onClick={onVolumeGuiUploadClick} disabled={volumeGuiLoading}>Upload</button>
                 <input
@@ -6293,8 +6331,9 @@ function VolumePanel({
                 onRefreshVolumes();
               }}
               disabled={volumesLoading}
+              title="Reload volume information from the selected server"
             >
-              Refresh
+              Refresh volumes
             </button>
           </div>
 
@@ -6570,8 +6609,9 @@ function NetworkPanel({
                 onRefreshNetworks();
               }}
               disabled={networksLoading}
+              title="Reload network information from the selected server"
             >
-              Refresh
+              Refresh networks
             </button>
           </div>
 
@@ -6954,8 +6994,14 @@ function DeploymentPanel({
           <div className="deployment-list-panel">
             <div className="resource-delete-toolbar">
               <p>{deployments.length ? `${deployments.length} deployment(s) available.` : 'No deployments found.'}</p>
-              <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshDeployments} disabled={deploymentsLoading}>
-                Refresh
+              <button
+                type="button"
+                className="home-secondary-button refresh-action-button"
+                onClick={onRefreshDeployments}
+                disabled={deploymentsLoading}
+                title="Reload deployment information"
+              >
+                Refresh deployments
               </button>
             </div>
 
@@ -6991,6 +7037,7 @@ function DeploymentPanel({
                     className="home-secondary-button refresh-action-button"
                     onClick={onRefreshDeploymentDetail}
                     disabled={deploymentDetailLoading}
+                    title="Reload details for the selected deployment"
                   >
                     Refresh details
                   </button>
@@ -7594,10 +7641,22 @@ function RegistryPanel({
           >
             {deployLoading ? 'Queueing deployment...' : 'Deploy image'}
           </button>
-          <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshImages} disabled={imagesLoading || deployLoading}>
+          <button
+            type="button"
+            className="home-secondary-button refresh-action-button"
+            onClick={onRefreshImages}
+            disabled={imagesLoading || deployLoading}
+            title="Reload images available in the registry"
+          >
             Refresh images
           </button>
-          <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={agentsLoading || deployLoading}>
+          <button
+            type="button"
+            className="home-secondary-button refresh-action-button"
+            onClick={onRefreshAgents}
+            disabled={agentsLoading || deployLoading}
+            title="Reload connected deployment agents"
+          >
             Refresh agents
           </button>
         </div>
@@ -7776,8 +7835,9 @@ function BuildImagePanel({
                 onRefreshImages();
               }}
               disabled={imagesLoading}
+              title="Reload image information from the selected server"
             >
-              Refresh
+              Refresh images
             </button>
           </div>
 
@@ -8326,8 +8386,14 @@ function AgentPanel({
                 >
                   {agentRedeployLoading ? 'Redeploying agent...' : 'Redeploy selected agent'}
                 </button>
-                <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={agentsLoading || agentRemoveLoading || agentRedeployLoading}>
-                  Refresh
+                <button
+                  type="button"
+                  className="home-secondary-button refresh-action-button"
+                  onClick={onRefreshAgents}
+                  disabled={agentsLoading || agentRemoveLoading || agentRedeployLoading}
+                  title="Reload active and deleted agent information"
+                >
+                  Refresh agents
                 </button>
                 <button
                   type="button"
@@ -8486,8 +8552,14 @@ function AgentPanel({
         <div className="connected-agent-panel">
           <div className="resource-delete-toolbar">
             <p>{agentsError ? 'Unable to load agents.' : (agents.length ? `${agents.length} server(s) available.` : 'No connected agents found.')}</p>
-            <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={agentsLoading}>
-              Refresh
+            <button
+              type="button"
+              className="home-secondary-button refresh-action-button"
+              onClick={onRefreshAgents}
+              disabled={agentsLoading}
+              title="Reload connected server information"
+            >
+              Refresh servers
             </button>
           </div>
 
@@ -8691,7 +8763,15 @@ function RbacPanel({
           <h2>Users & Access</h2>
           <p>Create scoped users and reusable groups without changing existing accounts.</p>
         </div>
-        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={rbacLoading}>Refresh</button>
+        <button
+          type="button"
+          className="home-secondary-button refresh-action-button"
+          onClick={onRefresh}
+          disabled={rbacLoading}
+          title="Reload users, groups, and permission information"
+        >
+          Refresh access data
+        </button>
       </div>
 
       <div className="rbac-mode-heading">
@@ -8833,7 +8913,12 @@ function ServerInfoPanel({
             <p>{error} Check that the backend server is reachable, then try again.</p>
           </div>
         </div>
-        <button type="button" className="home-primary-button refresh-action-button" onClick={onRefresh}>
+        <button
+          type="button"
+          className="home-primary-button refresh-action-button"
+          onClick={onRefresh}
+          title="Retry loading server health information"
+        >
           Try again
         </button>
       </section>
@@ -8903,8 +8988,13 @@ function ServerInfoPanel({
           <p>{serverInfo.server_name || 'Application server'} - automatically checked every 5 seconds</p>
         </div>
         <div className="server-info-actions">
-          <button type="button" className="home-primary-button refresh-action-button" onClick={onRefresh}>
-            Refresh
+          <button
+            type="button"
+            className="home-primary-button refresh-action-button"
+            onClick={onRefresh}
+            title="Run the server health check now"
+          >
+            Refresh health
           </button>
           {onBackToDashboard ? (
             <button type="button" className="home-secondary-button dashboard-back-button" onClick={onBackToDashboard}>

@@ -113,8 +113,10 @@ export const authService = {
     return api.delete('/api/auth/rbac/', { data: { type, id } });
   },
 
-  getServerInfo: () => {
-    return api.get('/api/auth/server-info/');
+  getServerInfo: (serverId) => {
+    return api.get('/api/auth/server-info/', {
+      params: serverId ? { server_id: serverId } : {},
+    });
   },
 
   getUser: () => {
@@ -281,6 +283,14 @@ export const authService = {
     });
   },
 
+  runAgentTerminalCommand: (serverId, command, cwd) => {
+    return api.post('/api/auth/agent-terminal/', {
+      server_id: serverId || 'local',
+      command,
+      cwd: cwd || '/',
+    });
+  },
+
   browseComposeFiles: (path) => {
     return api.get('/api/auth/browse-compose-files/', {
       params: path ? { path } : {},
@@ -335,16 +345,20 @@ export const authService = {
     });
   },
 
-  browseDockerfiles: (path) => {
+  browseDockerfiles: (path, serverId) => {
     return api.get('/api/auth/browse-dockerfiles/', {
-      params: path ? { path } : {},
+      params: {
+        ...(path ? { path } : {}),
+        ...(serverId ? { server_id: serverId } : {}),
+      },
     });
   },
 
-  buildImage: (imageName, dockerfilePath) => {
+  buildImage: (imageName, dockerfilePath, serverId) => {
     return api.post('/api/auth/build-image/', {
       image_name: imageName,
       dockerfile_path: dockerfilePath,
+      ...(serverId ? { server_id: serverId } : {}),
     });
   },
 
@@ -409,9 +423,12 @@ export const authService = {
     return api.post('/api/auth/volume/', volumeData);
   },
 
-  deleteVolume: (volumeName) => {
+  deleteVolume: (volumeName, serverId) => {
     return api.delete('/api/auth/volume/', {
-      data: { name: volumeName },
+      data: {
+        name: volumeName,
+        ...(serverId ? { server_id: serverId } : {}),
+      },
     });
   },
 };

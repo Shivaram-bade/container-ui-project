@@ -758,14 +758,14 @@ def main():
     last_heartbeat = time.time()
     while True:
         now = time.time()
-        if now - last_heartbeat >= 60:
+        if now - last_heartbeat >= 5:
             heartbeat()
             last_heartbeat = now
         handled = poll_command()
         if now - last_deployment_poll >= 30:
             handled = poll_deployment() or handled
             last_deployment_poll = now
-        time.sleep(0.5 if handled else 2)
+        time.sleep(0.1 if handled else 0.25)
 
 
 if __name__ == '__main__':
@@ -1639,7 +1639,7 @@ def run_agent_pull_command(agent, password, command, timeout=120):
                 'output': mask_secret(command_record.output, password),
                 **({} if command_record.success else {'error': command_record.output or 'Agent command failed.'}),
             }
-        time.sleep(0.5)
+        time.sleep(0.1)
 
     command_record.status = AgentCommand.STATUS_FAILED
     command_record.output = (
@@ -1657,23 +1657,26 @@ def run_agent_pull_command(agent, password, command, timeout=120):
     }
 
 
+def agent_http_endpoint_reachable(agent, timeout=0.75):
+    try:
+        with socket.create_connection((str(agent.server_ip), int(agent.port or 19541)), timeout=timeout):
+            return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def run_agent_command(agent, password, command, timeout=120):
-    pull_result = run_agent_pull_command(agent, password, command, timeout=timeout)
-    if pull_result.get('success') or 'did not return command' not in pull_result.get('output', ''):
-        return pull_result
+    if agent_http_endpoint_reachable(agent):
+        http_result = run_agent_http_command(agent, password, command, timeout=timeout)
+        output = http_result.get('output', '')
+        should_fallback_to_pull = (
+            'Unable to reach agent command endpoint' in output
+            or 'does not expose the container command endpoint' in output
+        )
+        if http_result.get('success') or not should_fallback_to_pull:
+            return http_result
 
-    http_result = run_agent_http_command(agent, password, command, timeout=timeout)
-    if http_result.get('success'):
-        return http_result
-
-    return {
-        **pull_result,
-        'output': '\n\n'.join([
-            pull_result.get('output', ''),
-            'Fallback direct agent HTTP command also failed:',
-            http_result.get('output', ''),
-        ]).strip(),
-    }
+    return run_agent_pull_command(agent, password, command, timeout=timeout)
 
 def run_local_shell_command(command_text, password='', timeout=120):
     display_command = 'sh -lc <local agent command>'
@@ -1992,11 +1995,15 @@ def build_local_agent_container_install_command(agent, password, request):
         'docker rm -f "$AGENT_CONTAINER" "$LEGACY_AGENT_CONTAINER" >/dev/null 2>&1 || true',
         'for OLD_AGENT in $(docker ps -aq --filter "name=^/vitel-agent-"); do echo "Removing old agent container: $OLD_AGENT"; docker rm -f "$OLD_AGENT" >/dev/null 2>&1 || true; done',
         'echo "Starting agent container: $AGENT_CONTAINER"',
-            'docker run -d \\',
+        'docker run -d \\',
         '  --name "$AGENT_CONTAINER" \\',
+        '  --privileged \\',
+        '  --pid host \\',
         '  --network "$AGENT_NETWORK" \\',
         '  -p "$AGENT_PORT_MAPPING" \\',
-            '  -v /var/run/docker.sock:/var/run/docker.sock \\',
+        '  -v /var/run/docker.sock:/var/run/docker.sock \\',
+        '  -v /:/hostfs \\',
+        '  -v /proc:/hostproc:ro \\',
         '  -v "$AGENT_VOLUME:/tmp/vitel-agent" \\',
         f"  -e VITEL_AGENT_SCRIPT_B64={shlex.quote(script_b64)} \\",
         '  "$AGENT_IMAGE" sh -lc \'mkdir -p /tmp/vitel-agent && printf "%s" "$VITEL_AGENT_SCRIPT_B64" | base64 -d > /tmp/vitel-agent/vitel-agent.sh && chmod +x /tmp/vitel-agent/vitel-agent.sh && exec sh /tmp/vitel-agent/vitel-agent.sh\'',
@@ -2348,10 +2355,13 @@ def build_remote_agent_install_command(agent, password, request, agent_dir=None,
         'echo "Starting agent container: $AGENT_CONTAINER"',
         '$DOCKER run -d \\',
         '  --name "$AGENT_CONTAINER" \\',
-            '  --restart unless-stopped \\',
-        '  -p "$AGENT_PORT:$AGENT_PORT" \\',
-            '  -v /var/run/docker.sock:/var/run/docker.sock \\',
-            '  -v /var/lib/docker:/var/lib/docker \\',
+        '  --restart unless-stopped \\',
+        '  --privileged \\',
+        '  --pid host \\',
+        '  --network host \\',
+        '  -v /var/run/docker.sock:/var/run/docker.sock \\',
+        '  -v /:/hostfs \\',
+        '  -v /proc:/hostproc:ro \\',
         f"  -e VITEL_AGENT_SCRIPT_B64={shlex.quote(script_b64)} \\",
         '  "$AGENT_IMAGE" sh -lc \'mkdir -p /tmp/vitel-agent && printf "%s" "$VITEL_AGENT_SCRIPT_B64" | base64 -d > /tmp/vitel-agent/vitel-agent.sh && chmod +x /tmp/vitel-agent/vitel-agent.sh && exec sh /tmp/vitel-agent/vitel-agent.sh\'',
         'sleep 1',
@@ -2368,23 +2378,24 @@ def build_remote_agent_install_command(agent, password, request, agent_dir=None,
 
 
 def build_remote_agent_async_uninstall_command(agent, agent_dir=None):
-    agent_dir_value = shlex.quote(agent_dir) if agent_dir else '$HOME/.vitel-agent'
-    cleanup_script = f'/tmp/vitel-agent-uninstall-{agent.id}.sh'
-    cleanup_command = "\n".join([
-        'sleep 2',
-        build_remote_agent_uninstall_command(agent, agent_dir),
-    ])
     return "\n".join([
-        "set +e",
-        f"AGENT_DIR={agent_dir_value}",
-        f"CLEANUP_SCRIPT={shlex.quote(cleanup_script)}",
-        'echo "Queueing agent self-uninstall through the agent command endpoint."',
-        "cat > \"$CLEANUP_SCRIPT\" <<'EOF'",
-        cleanup_command,
-        "EOF",
-        'chmod +x "$CLEANUP_SCRIPT"',
-        'nohup sh "$CLEANUP_SCRIPT" >/tmp/vitel-agent-uninstall.log 2>&1 &',
-        f"echo 'Agent {agent.name} uninstall queued. The local record will be removed now.'",
+        'set -e',
+        f'AGENT_CONTAINER={shlex.quote(REMOTE_AGENT_CONTAINER_NAME)}',
+        f'LEGACY_AGENT_CONTAINER={shlex.quote(LEGACY_REMOTE_AGENT_CONTAINER_NAME)}',
+        f'CLEANUP_CONTAINER={shlex.quote(f"vitel-agent-cleanup-{agent.id}")}',
+        'AGENT_IMAGE_REF=$(docker inspect -f \'{{.Config.Image}}\' "$AGENT_CONTAINER" 2>/dev/null || true)',
+        'AGENT_IMAGE_ID=$(docker inspect -f \'{{.Image}}\' "$AGENT_CONTAINER" 2>/dev/null || true)',
+        'docker rm -f "$CLEANUP_CONTAINER" >/dev/null 2>&1 || true',
+        'docker pull docker:27-cli >/dev/null',
+        'docker run -d --rm \\',
+        '  --name "$CLEANUP_CONTAINER" \\',
+        '  -v /var/run/docker.sock:/var/run/docker.sock \\',
+        '  -e AGENT_CONTAINER="$AGENT_CONTAINER" \\',
+        '  -e LEGACY_AGENT_CONTAINER="$LEGACY_AGENT_CONTAINER" \\',
+        '  -e AGENT_IMAGE_REF="$AGENT_IMAGE_REF" \\',
+        '  -e AGENT_IMAGE_ID="$AGENT_IMAGE_ID" \\',
+        '  docker:27-cli sh -lc \'sleep 2; docker rm -f "$AGENT_CONTAINER" "$LEGACY_AGENT_CONTAINER" >/dev/null 2>&1 || true; sleep 1; [ -n "$AGENT_IMAGE_REF" ] && docker image rm -f "$AGENT_IMAGE_REF" >/dev/null 2>&1 || true; [ -n "$AGENT_IMAGE_ID" ] && docker image rm -f "$AGENT_IMAGE_ID" >/dev/null 2>&1 || true\'',
+        f"echo 'Agent {agent.name} container and image cleanup queued on the selected server.'",
     ])
 
 
@@ -2394,14 +2405,19 @@ def build_remote_agent_uninstall_command(agent, agent_dir=None):
         "set +e",
         f"AGENT_DIR={agent_dir_value}",
         f"AGENT_CONTAINER={shlex.quote(REMOTE_AGENT_CONTAINER_NAME)}",
+        f"LEGACY_AGENT_CONTAINER={shlex.quote(LEGACY_REMOTE_AGENT_CONTAINER_NAME)}",
         'SUDO=""; if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO=sudo; $SUDO -v 2>/dev/null || true; fi',
         'DOCKER="docker"; if [ -n "$SUDO" ]; then DOCKER="$SUDO -n docker"; fi',
+        'AGENT_IMAGE_REF=$($DOCKER inspect -f \'{{.Config.Image}}\' "$AGENT_CONTAINER" 2>/dev/null || true)',
+        'AGENT_IMAGE_ID=$($DOCKER inspect -f \'{{.Image}}\' "$AGENT_CONTAINER" 2>/dev/null || true)',
         'AGENT_PID=""',
         'PORT_PID=""',
         'stop_pid() { TARGET_PID="$1"; kill "$TARGET_PID" 2>/dev/null || { [ -n "$SUDO" ] && $SUDO -n kill "$TARGET_PID" 2>/dev/null; } || true; }',
         'pid_is_running() { TARGET_PID="$1"; kill -0 "$TARGET_PID" >/dev/null 2>&1 || { [ -n "$SUDO" ] && $SUDO -n kill -0 "$TARGET_PID" >/dev/null 2>&1; }; }',
         'echo "Removing Dockerized agent container: $AGENT_CONTAINER"',
-        'if command -v docker >/dev/null 2>&1; then $DOCKER rm -f "$AGENT_CONTAINER" >/dev/null 2>&1 && echo "Container removed: $AGENT_CONTAINER" || echo "Agent container not found or could not be removed: $AGENT_CONTAINER"; else echo "Docker is not installed; skipping agent container removal."; fi',
+        'if command -v docker >/dev/null 2>&1; then $DOCKER rm -f "$AGENT_CONTAINER" "$LEGACY_AGENT_CONTAINER" >/dev/null 2>&1 && echo "Container removed: $AGENT_CONTAINER" || echo "Agent container not found or could not be removed: $AGENT_CONTAINER"; else echo "Docker is not installed; skipping agent container removal."; fi',
+        'if [ -n "$AGENT_IMAGE_REF" ]; then $DOCKER image rm -f "$AGENT_IMAGE_REF" >/dev/null 2>&1 && echo "Image removed: $AGENT_IMAGE_REF" || true; fi',
+        'if [ -n "$AGENT_IMAGE_ID" ]; then $DOCKER image rm -f "$AGENT_IMAGE_ID" >/dev/null 2>&1 || true; fi',
         'if [ -f "$AGENT_DIR/vitel-agent.pid" ]; then AGENT_PID=$(cat "$AGENT_DIR/vitel-agent.pid"); stop_pid "$AGENT_PID"; fi',
         'if [ -f "$AGENT_DIR/vitel-agent-port.pid" ]; then PORT_PID=$(cat "$AGENT_DIR/vitel-agent-port.pid"); stop_pid "$PORT_PID"; fi',
         'sleep 1',
@@ -2475,7 +2491,8 @@ def get_dockerfile_build_command(image_name, dockerfile_path, local=True):
             return None, f'Dockerfile not found: {dockerfile}'
         return ['docker', 'build', '-t', image_name, '-f', str(dockerfile), str(dockerfile.parent)], ''
 
-    dockerfile = str(dockerfile_path or '').strip()
+    requested_path = posixpath.normpath('/' + str(dockerfile_path or '').strip().lstrip('/'))
+    dockerfile = '/hostfs' + requested_path
     context_dir = os.path.dirname(dockerfile.rstrip('/')) or '.'
     return ['docker', 'build', '-t', image_name, '-f', dockerfile, context_dir], ''
 
@@ -3274,16 +3291,171 @@ def get_load_average():
         }
 
 
+REMOTE_SERVER_INFO_SCRIPT = r'''
+import json
+import os
+import platform
+import shutil
+import subprocess
+
+host_proc = '/hostproc' if os.path.isdir('/hostproc') else '/proc'
+host_root = '/hostfs' if os.path.isdir('/hostfs') else '/'
+
+
+def format_bytes(size):
+    size = float(size or 0)
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024:
+            return '%.1f %s' % (size, unit)
+        size /= 1024
+    return '%.1f PB' % size
+
+
+def percent(used, total):
+    return '%.1f%%' % ((used / total) * 100) if total else 'Unavailable'
+
+
+def count_lines(command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    if result.returncode != 0:
+        return 0
+    return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
+memory = {
+    'total': 'Unavailable',
+    'available': 'Unavailable',
+    'used': 'Unavailable',
+    'used_percent': 'Unavailable',
+}
+try:
+    values = {}
+    with open(os.path.join(host_proc, 'meminfo'), 'r', encoding='utf-8') as meminfo:
+        for line in meminfo:
+            key, value = line.split(':', 1)
+            values[key] = int(value.strip().split()[0]) * 1024
+    total = values.get('MemTotal')
+    available = values.get('MemAvailable')
+    if total:
+        memory['total'] = format_bytes(total)
+    if available:
+        memory['available'] = format_bytes(available)
+    if total and available:
+        used = total - available
+        memory['used'] = format_bytes(used)
+        memory['used_percent'] = percent(used, total)
+except (OSError, ValueError, IndexError):
+    pass
+
+load_average = {
+    'one_minute': 'Unavailable',
+    'five_minutes': 'Unavailable',
+    'fifteen_minutes': 'Unavailable',
+}
+try:
+    with open(os.path.join(host_proc, 'loadavg'), 'r', encoding='utf-8') as loadavg:
+        values = loadavg.read().split()
+    load_average = {
+        'one_minute': '%.2f' % float(values[0]),
+        'five_minutes': '%.2f' % float(values[1]),
+        'fifteen_minutes': '%.2f' % float(values[2]),
+    }
+except (OSError, ValueError, IndexError):
+    pass
+
+processor = platform.processor() or 'Unavailable'
+try:
+    with open(os.path.join(host_proc, 'cpuinfo'), 'r', encoding='utf-8') as cpuinfo:
+        for line in cpuinfo:
+            if line.lower().startswith(('model name', 'hardware')):
+                processor = line.split(':', 1)[1].strip() or processor
+                break
+except (OSError, IndexError):
+    pass
+
+disk = shutil.disk_usage(host_root)
+payload = {
+    'operating_system': {
+        'system': platform.system(),
+        'release': platform.release(),
+        'version': platform.version(),
+        'platform': platform.platform(),
+        'architecture': platform.machine(),
+        'processor': processor,
+    },
+    'resources': {
+        'cpu_count': os.cpu_count(),
+        'load_average': load_average,
+        'memory': memory,
+        'disk': {
+            'total': format_bytes(disk.total),
+            'used': format_bytes(disk.used),
+            'free': format_bytes(disk.free),
+            'used_percent': percent(disk.used, disk.total),
+        },
+    },
+    'docker': {
+        'containers_count': count_lines(['docker', 'ps', '-aq']),
+        'images_count': count_lines(['docker', 'image', 'ls', '-q']),
+        'networks_count': count_lines(['docker', 'network', 'ls', '-q']),
+        'volumes_count': count_lines(['docker', 'volume', 'ls', '-q']),
+    },
+}
+print(json.dumps(payload))
+'''
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def server_info(request):
-    """Return operating system and live resource details for the backend server."""
+    """Return operating system and live resource details for the selected server."""
     if not user_has_operation(request.user, 'view_server_info'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+
+    agent, password, remote_agent, error_response = get_docker_target_context(request)
+    if error_response:
+        return error_response
+
+    if remote_agent:
+        result = run_agent_command(
+            agent,
+            password,
+            ['python3', '-c', REMOTE_SERVER_INFO_SCRIPT],
+            timeout=30,
+        )
+        if not result.get('success'):
+            return Response({
+                'success': False,
+                'error': result.get('error') or result.get('output') or 'Unable to collect health information from the selected agent.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            response_data = next(
+                json.loads(line)
+                for line in reversed(result.get('output', '').splitlines())
+                if line.strip().startswith('{')
+            )
+        except (StopIteration, json.JSONDecodeError):
+            return Response({
+                'success': False,
+                'error': 'The selected agent returned invalid health information.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        response_data.update({
+            'server_id': str(agent.id),
+            'server_name': agent.name,
+            'checked_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
+        })
+        return Response(response_data)
 
     disk = shutil.disk_usage(settings.BASE_DIR)
 
     return Response({
+        'server_id': str(agent.id) if agent else 'local',
+        'server_name': agent.name if agent else 'Application server',
         'operating_system': {
             'system': platform.system(),
             'release': platform.release(),
@@ -3305,6 +3477,170 @@ def server_info(request):
         },
         'docker': count_docker_resources(),
         'checked_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
+    })
+
+
+REMOTE_AGENT_TERMINAL_SCRIPT = r'''
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+command = base64.b64decode(sys.argv[1]).decode('utf-8', errors='replace')
+requested_cwd = base64.b64decode(sys.argv[2]).decode('utf-8', errors='replace') or '/'
+requested_cwd = os.path.normpath('/' + requested_cwd.lstrip('/'))
+host_root = '/hostfs'
+host_cwd = os.path.join(host_root, requested_cwd.lstrip('/'))
+if not os.path.isdir(host_cwd):
+    requested_cwd = '/'
+    host_cwd = host_root
+
+shell_script = """
+cd -- "$1" 2>/dev/null || cd /
+eval "$2"
+return_code=$?
+printf "\\n__VITEL_TERMINAL_CWD__:%s\\n" "$PWD"
+exit "$return_code"
+"""
+
+if os.path.isdir(host_root) and shutil.which('chroot'):
+    host_shell = '/bin/bash' if os.path.isfile(os.path.join(host_root, 'bin/bash')) else '/bin/sh'
+    process = subprocess.run(
+        ['chroot', host_root, host_shell, '-lc', shell_script, 'vitel-terminal', requested_cwd, command],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+else:
+    process = subprocess.run(
+        ['/bin/bash' if os.path.isfile('/bin/bash') else '/bin/sh', '-lc', shell_script, 'vitel-terminal', host_cwd, command],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+output = ((process.stdout or '') + ('\n' if process.stdout and process.stderr else '') + (process.stderr or '')).strip()
+cwd_marker = '__VITEL_TERMINAL_CWD__:'
+next_cwd = requested_cwd
+clean_lines = []
+for line in output.splitlines():
+    if line.startswith(cwd_marker):
+        next_cwd = line[len(cwd_marker):].strip() or '/'
+    else:
+        clean_lines.append(line)
+
+print(json.dumps({
+    'output': '\n'.join(clean_lines).rstrip(),
+    'cwd': next_cwd,
+    'return_code': process.returncode,
+}))
+'''
+
+
+def run_local_terminal_command(command, cwd):
+    requested_cwd = os.path.normpath('/' + str(cwd or '/').lstrip('/'))
+    if not os.path.isdir(requested_cwd):
+        requested_cwd = '/'
+    shell = '/bin/bash' if os.path.isfile('/bin/bash') else '/bin/sh'
+    shell_script = '''
+cd -- "$1" 2>/dev/null || cd /
+eval "$2"
+return_code=$?
+printf "\\n__VITEL_TERMINAL_CWD__:%s\\n" "$PWD"
+exit "$return_code"
+'''
+    try:
+        process = subprocess.run(
+            [shell, '-lc', shell_script, 'vitel-terminal', requested_cwd, command],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or '') + '\n' + (exc.stderr or '')).strip()
+        return {
+            'output': output or 'Command timed out after 120 seconds.',
+            'cwd': requested_cwd,
+            'return_code': None,
+        }
+
+    output = ((process.stdout or '') + ('\n' if process.stdout and process.stderr else '') + (process.stderr or '')).strip()
+    marker = '__VITEL_TERMINAL_CWD__:'
+    next_cwd = requested_cwd
+    clean_lines = []
+    for line in output.splitlines():
+        if line.startswith(marker):
+            next_cwd = line[len(marker):].strip() or '/'
+        else:
+            clean_lines.append(line)
+    return {
+        'output': '\n'.join(clean_lines).rstrip(),
+        'cwd': next_cwd,
+        'return_code': process.returncode,
+    }
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def agent_terminal(request):
+    """Run a Linux command on the selected application or agent server."""
+    if not user_has_operation(request.user, 'manage_agents'):
+        return Response({'error': 'You do not have permission to open server terminals.'}, status=status.HTTP_403_FORBIDDEN)
+
+    command = str(request.data.get('command') or '')
+    cwd = str(request.data.get('cwd') or '/')
+    if not command.strip():
+        return Response({'error': 'Command is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    agent, password, remote_agent, error_response = get_docker_target_context(request)
+    if error_response:
+        return error_response
+
+    if not agent:
+        result = run_local_terminal_command(command, cwd)
+        return Response({
+            'success': True,
+            'server_id': 'local',
+            'server_name': 'Application server',
+            **result,
+        })
+
+    encoded_command = base64.b64encode(command.encode('utf-8')).decode('ascii')
+    encoded_cwd = base64.b64encode(cwd.encode('utf-8')).decode('ascii')
+    result = run_agent_command(
+        agent,
+        password,
+        ['python3', '-c', REMOTE_AGENT_TERMINAL_SCRIPT, encoded_command, encoded_cwd],
+        timeout=130,
+    )
+    if not result.get('success'):
+        return Response({
+            'success': False,
+            'error': result.get('error') or result.get('output') or 'Unable to run the command on the selected agent.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        terminal_result = next(
+            json.loads(line)
+            for line in reversed(result.get('output', '').splitlines())
+            if line.strip().startswith('{')
+        )
+    except (StopIteration, json.JSONDecodeError):
+        return Response({
+            'success': False,
+            'error': 'The selected agent returned an invalid terminal response.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        'success': True,
+        'server_id': str(agent.id),
+        'server_name': agent.name,
+        **terminal_result,
     })
 
 
@@ -3649,13 +3985,22 @@ def agents(request):
                     password=agent_secret,
                     timeout=60,
                 )
-            else:
-                remote_cleanup_skipped = True
+            elif not agent.connected and not agent_http_endpoint_reachable(agent):
                 result = {
-                    'success': True,
-                    'command': 'manual agent cleanup',
-                    'output': build_manual_agent_cleanup_output(),
+                    'success': False,
+                    'command': 'remote agent cleanup',
+                    'output': (
+                        'The manual agent is offline, so its Docker container and image cannot be removed safely. '
+                        'Start the agent on the target server, refresh the agent list, and delete it again.'
+                    ),
                 }
+            else:
+                result = run_agent_command(
+                    agent,
+                    agent_secret,
+                    build_remote_agent_async_uninstall_command(agent),
+                    timeout=60,
+                )
         elif should_manage_agent_locally(request, agent):
             result = run_local_shell_command(
                 build_local_agent_container_uninstall_command(agent),
@@ -5434,11 +5779,114 @@ def volume(request):
     return Response(result, status=status.HTTP_201_CREATED if result['success'] else status.HTTP_400_BAD_REQUEST)
 
 
+REMOTE_DOCKERFILE_BROWSER_SCRIPT = r'''
+import json
+import os
+import posixpath
+import sys
+
+root = '/hostfs'
+requested = sys.argv[1] if len(sys.argv) > 1 else '/'
+display_path = posixpath.normpath('/' + str(requested or '/').lstrip('/'))
+current_path = root if display_path == '/' else root + display_path
+error = ''
+
+if not os.path.isdir(root):
+    error = 'The agent cannot access the server filesystem. Redeploy this agent to enable remote file browsing.'
+elif os.path.islink(current_path):
+    error = 'Symbolic-link paths are not available in the remote browser.'
+else:
+    while not os.path.exists(current_path) and current_path != root:
+        current_path = os.path.dirname(current_path)
+    if os.path.isfile(current_path):
+        current_path = os.path.dirname(current_path)
+
+directories = []
+dockerfiles = []
+
+if not error:
+    try:
+        entries = sorted(
+            os.scandir(current_path),
+            key=lambda entry: (not entry.is_dir(follow_symlinks=False), entry.name.lower()),
+        )
+        for entry in entries[:500]:
+            if entry.is_symlink():
+                continue
+            relative = os.path.relpath(entry.path, root)
+            entry_path = '/' if relative == '.' else '/' + relative.replace(os.sep, '/')
+            if entry.is_dir(follow_symlinks=False):
+                directories.append({'name': entry.name, 'path': entry_path})
+            elif entry.is_file(follow_symlinks=False) and entry.name.lower().startswith('dockerfile'):
+                dockerfiles.append({'name': entry.name, 'path': entry_path})
+    except PermissionError:
+        error = "Permission denied: Cannot read '%s'" % display_path
+    except OSError as exc:
+        error = 'Error reading directory: %s' % exc
+
+relative_current = os.path.relpath(current_path, root)
+current_display = '/' if relative_current == '.' else '/' + relative_current.replace(os.sep, '/')
+parent_display = '' if current_display == '/' else posixpath.dirname(current_display) or '/'
+payload = {
+    'current_path': current_display,
+    'parent_path': parent_display,
+    'directories': directories,
+    'dockerfiles': dockerfiles,
+}
+if error:
+    payload['error'] = error
+print(json.dumps(payload))
+'''
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def browse_dockerfiles(request):
-    """Browse server folders and Dockerfile candidates for image builds."""
+    """Browse Dockerfile candidates on the selected application or agent server."""
+    if not user_has_any_operation(request.user, ['build_images', 'create_container']):
+        return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+
     requested_path = request.GET.get('path') or '/'
+    agent, password, remote_agent, error_response = get_docker_target_context(request)
+    if error_response:
+        return error_response
+
+    if remote_agent:
+        result = run_agent_command(
+            agent,
+            password,
+            ['python3', '-c', REMOTE_DOCKERFILE_BROWSER_SCRIPT, requested_path],
+            timeout=45,
+        )
+        if not result.get('success'):
+            return Response({
+                'success': False,
+                'error': result.get('error') or result.get('output') or 'Unable to browse files on the selected agent.',
+                'current_path': requested_path,
+                'parent_path': '',
+                'directories': [],
+                'dockerfiles': [],
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            response_data = next(
+                json.loads(line)
+                for line in reversed(result.get('output', '').splitlines())
+                if line.strip().startswith('{')
+            )
+        except (StopIteration, json.JSONDecodeError):
+            return Response({
+                'success': False,
+                'error': 'The selected agent returned an invalid file-browser response.',
+                'current_path': requested_path,
+                'parent_path': '',
+                'directories': [],
+                'dockerfiles': [],
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        response_data['server_id'] = str(agent.id)
+        response_data['server_name'] = agent.name
+        return Response(response_data)
     
     # Try to resolve the requested path
     try:
@@ -5510,6 +5958,8 @@ def browse_dockerfiles(request):
         'parent_path': str(current_path.parent) if current_path.parent != current_path else '',
         'directories': directories,
         'dockerfiles': dockerfiles,
+        'server_id': str(agent.id) if agent else 'local',
+        'server_name': agent.name if agent else 'Application server',
     }
     
     if error_msg:
@@ -5887,6 +6337,42 @@ def run_build_job(job_id, command, image_name):
             BUILD_JOBS[job_id]['output'] += f'\n{exc}\n'
 
 
+def run_remote_build_job(job_id, agent, password, command):
+    with BUILD_JOBS_LOCK:
+        BUILD_JOBS[job_id]['running'] = True
+        BUILD_JOBS[job_id]['output'] = (
+            f'Building image on agent {agent.name} ({agent.server_ip}).\n'
+            f"$ {' '.join(command)}\n"
+        )
+
+    try:
+        result = run_agent_command(agent, password, command, timeout=1800)
+    except Exception as exc:
+        result = {
+            'success': False,
+            'return_code': None,
+            'output': str(exc),
+        }
+
+    with BUILD_JOBS_LOCK:
+        job = BUILD_JOBS.get(job_id)
+        if not job:
+            return
+        stopped = job.get('stopped', False)
+        if result.get('output'):
+            job['output'] += result['output'].rstrip() + '\n'
+        job['running'] = False
+        job['success'] = bool(result.get('success')) and not stopped
+        job['return_code'] = result.get('return_code')
+        job['process'] = None
+        if stopped:
+            job['output'] += '\nRemote image build was marked as stopped.\n'
+        elif result.get('success'):
+            job['output'] += '\nDocker image build completed on the selected agent.\n'
+        else:
+            job['output'] += '\nDocker image build failed on the selected agent.\n'
+
+
 @api_view(['GET', 'POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def build_image(request):
@@ -5932,14 +6418,16 @@ def build_image(request):
             'error': 'Image name and Dockerfile path are required.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    dockerfile = Path(dockerfile_path).expanduser().resolve()
-    if not dockerfile.is_file():
+    command, build_error = get_dockerfile_build_command(
+        image_name,
+        dockerfile_path,
+        local=not remote_agent,
+    )
+    if build_error:
         return Response({
-            'error': f'Dockerfile not found: {dockerfile}',
+            'error': build_error,
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    context_dir = dockerfile.parent
-    command = ['docker', 'build', '-t', image_name, '-f', str(dockerfile), str(context_dir)]
     job_id = uuid.uuid4().hex
 
     with BUILD_JOBS_LOCK:
@@ -5951,9 +6439,18 @@ def build_image(request):
             'return_code': None,
             'process': None,
             'stopped': False,
+            'remote': remote_agent,
+            'server_id': str(agent.id) if agent else 'local',
         }
 
-    thread = threading.Thread(target=run_build_job, args=(job_id, command, image_name), daemon=True)
+    if remote_agent:
+        thread = threading.Thread(
+            target=run_remote_build_job,
+            args=(job_id, agent, password, command),
+            daemon=True,
+        )
+    else:
+        thread = threading.Thread(target=run_build_job, args=(job_id, command, image_name), daemon=True)
     thread.start()
 
     return Response({
@@ -5999,6 +6496,13 @@ def stop_build_image(request, job_id):
         process = job.get('process')
         job['stopped'] = True
         job['output'] += '\nStopping Docker image build...\n'
+        if job.get('remote') and not process:
+            job['running'] = False
+            job['success'] = False
+            job['output'] += (
+                'The controller stopped tracking this remote build. '
+                'The Docker command may continue on the agent until it exits.\n'
+            )
 
     if process and process.poll() is None:
         try:

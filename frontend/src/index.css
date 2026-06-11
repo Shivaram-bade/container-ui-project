@@ -31,9 +31,21 @@ body {
 
 button,
 input,
-select,
 textarea {
   font: inherit;
+}
+select {
+  font: inherit;
+  color: #e3d6d6;
+  background: #0a0b0b4a;
+  font-size: 14px;
+  width: 200px;
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid #a2c3d33d;
+  position: relative;
+  left: 0px;
+  padding: 9px;
 }
 
 button {

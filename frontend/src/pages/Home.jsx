@@ -128,12 +128,23 @@ const DashboardBackContext = createContext(null);
 
 function OutputPortal({ children }) {
   if (typeof document === 'undefined') return null;
+  const portalTarget = document.querySelector('main.home-main') || document.body;
+  const targetRect = portalTarget === document.body ? null : portalTarget.getBoundingClientRect();
 
   return createPortal(
-    <div className="output-modal-layer" role="presentation">
+    <div
+      className="output-modal-layer"
+      role="presentation"
+      style={targetRect ? {
+        left: `${Math.max(0, targetRect.left)}px`,
+        top: `${Math.max(0, targetRect.top)}px`,
+        right: '0',
+        bottom: '0',
+      } : undefined}
+    >
       {children}
     </div>,
-    document.body
+    portalTarget
   );
 }
 
@@ -322,6 +333,7 @@ export default function Home() {
   const [serverInfo, setServerInfo] = useState(null);
   const [serverInfoLoading, setServerInfoLoading] = useState(false);
   const [serverInfoError, setServerInfoError] = useState('');
+  const [serverInfoServerId, setServerInfoServerId] = useState('');
   const [containerName, setContainerName] = useState('');
   const [containerRegistry, setContainerRegistry] = useState('dockerhub');
   const [containerImageName, setContainerImageName] = useState('');
@@ -405,6 +417,7 @@ export default function Home() {
   const [buildMessage, setBuildMessage] = useState('');
   const [buildJobId, setBuildJobId] = useState(() => localStorage.getItem(BUILD_JOB_STORAGE_KEY) || '');
   const [imageTab, setImageTab] = useState('build');
+  const [imageServerId, setImageServerId] = useState('');
   const [images, setImages] = useState([]);
   const [imagesLoading, setImagesLoading] = useState(false);
   const [imagesError, setImagesError] = useState('');
@@ -463,6 +476,7 @@ export default function Home() {
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkMessage, setNetworkMessage] = useState('');
   const [networkTab, setNetworkTab] = useState('create');
+  const [networkServerId, setNetworkServerId] = useState('');
   const [networks, setNetworks] = useState([]);
   const [networksLoading, setNetworksLoading] = useState(false);
   const [networksError, setNetworksError] = useState('');
@@ -475,6 +489,7 @@ export default function Home() {
   const [volumeLoading, setVolumeLoading] = useState(false);
   const [volumeMessage, setVolumeMessage] = useState('');
   const [volumeTab, setVolumeTab] = useState('create');
+  const [volumeServerId, setVolumeServerId] = useState('');
   const [volumes, setVolumes] = useState([]);
   const [volumesLoading, setVolumesLoading] = useState(false);
   const [volumesError, setVolumesError] = useState('');
@@ -648,17 +663,21 @@ export default function Home() {
     }
   };
 
-  const loadServerInfo = async (showLoading = true) => {
+  const loadServerInfo = async (
+    showLoading = true,
+    serverId = serverInfoServerId || LOCAL_SERVER_ID
+  ) => {
     if (showLoading) {
       setServerInfoLoading(true);
     }
     setServerInfoError('');
 
     try {
-      const response = await authService.getServerInfo();
+      const response = await authService.getServerInfo(serverId);
       setServerInfo(response.data);
     } catch (error) {
-      setServerInfoError('Unable to load server information.');
+      const data = error.response?.data;
+      setServerInfoError(data?.error || data?.output || 'Unable to load server information.');
     } finally {
       if (showLoading) {
         setServerInfoLoading(false);
@@ -671,16 +690,30 @@ export default function Home() {
       return undefined;
     }
 
-    loadServerInfo(!serverInfo);
-    const refreshTimer = window.setInterval(() => {
-      loadServerInfo(false);
-    }, 60000);
+    let cancelled = false;
+    let refreshTimer;
+    const serverId = serverInfoServerId || LOCAL_SERVER_ID;
+    const refreshServerInfo = async (showLoading = false) => {
+      const startedAt = Date.now();
+      if (document.visibilityState === 'visible') {
+        await loadServerInfo(showLoading, serverId);
+      }
+      if (!cancelled) {
+        const delay = Math.max(0, 5000 - (Date.now() - startedAt));
+        refreshTimer = window.setTimeout(() => refreshServerInfo(false), delay);
+      }
+    };
 
-    return () => window.clearInterval(refreshTimer);
-  }, [isServerInfoActive]);
+    loadAgents({ silent: agents.length > 0 });
+    refreshServerInfo(true);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
+    };
+  }, [isServerInfoActive, serverInfoServerId]);
 
-  const loadAgents = async () => {
-    setAgentsLoading(true);
+  const loadAgents = async ({ silent = false } = {}) => {
+    if (!silent) setAgentsLoading(true);
     setAgentsError('');
 
     try {
@@ -689,11 +722,13 @@ export default function Home() {
       setDeletedAgents(response.data.deleted_agents || []);
     } catch (error) {
       const data = error.response?.data;
-      setAgents([]);
-      setDeletedAgents([]);
+      if (!silent) {
+        setAgents([]);
+        setDeletedAgents([]);
+      }
       setAgentsError(data?.error || data?.detail || 'Unable to load connected agents.');
     } finally {
-      setAgentsLoading(false);
+      if (!silent) setAgentsLoading(false);
     }
   };
 
@@ -949,9 +984,12 @@ export default function Home() {
 
   const getSelectedDockerServerId = () => containerServerId || LOCAL_SERVER_ID;
   const getSelectedDashboardServerId = () => dashboardServerId || LOCAL_SERVER_ID;
+  const getSelectedImageServerId = () => imageServerId || LOCAL_SERVER_ID;
+  const getSelectedNetworkServerId = () => networkServerId || LOCAL_SERVER_ID;
+  const getSelectedVolumeServerId = () => volumeServerId || LOCAL_SERVER_ID;
 
-  const loadImages = async (serverId = getSelectedDockerServerId()) => {
-    setImagesLoading(true);
+  const loadImages = async (serverId = getSelectedImageServerId(), { silent = false } = {}) => {
+    if (!silent) setImagesLoading(true);
     setImagesError('');
 
     try {
@@ -959,18 +997,24 @@ export default function Home() {
       setImages(response.data.images || []);
     } catch (error) {
       const data = error.response?.data;
-      setImages([]);
+      if (!silent) setImages([]);
       setImagesError(data?.error || data?.output || 'Unable to load images.');
     } finally {
-      setImagesLoading(false);
+      if (!silent) setImagesLoading(false);
     }
   };
 
   useEffect(() => {
     if (isBuildImageActive && imageTab === 'delete') {
-      loadImages();
+      loadImages(getSelectedImageServerId());
     }
-  }, [isBuildImageActive, imageTab]);
+  }, [isBuildImageActive, imageTab, imageServerId]);
+
+  useEffect(() => {
+    if (isBuildImageActive || isNetworkActive || isVolumeActive) {
+      loadAgents();
+    }
+  }, [isBuildImageActive, isNetworkActive, isVolumeActive]);
 
   useEffect(() => {
     if (!imageDeleteMessage) {
@@ -1097,8 +1141,8 @@ export default function Home() {
     };
   }, []);
 
-  const loadNetworks = async (serverId = getSelectedDockerServerId()) => {
-    setNetworksLoading(true);
+  const loadNetworks = async (serverId = getSelectedNetworkServerId(), { silent = false } = {}) => {
+    if (!silent) setNetworksLoading(true);
     setNetworksError('');
 
     try {
@@ -1106,21 +1150,21 @@ export default function Home() {
       setNetworks(response.data.networks || []);
     } catch (error) {
       const data = error.response?.data;
-      setNetworks([]);
+      if (!silent) setNetworks([]);
       setNetworksError(data?.error || data?.output || 'Unable to load networks.');
     } finally {
-      setNetworksLoading(false);
+      if (!silent) setNetworksLoading(false);
     }
   };
 
   useEffect(() => {
     if (isNetworkActive && networkTab === 'delete') {
-      loadNetworks();
+      loadNetworks(getSelectedNetworkServerId());
     }
-  }, [isNetworkActive, networkTab]);
+  }, [isNetworkActive, networkTab, networkServerId]);
 
-  const loadVolumes = async (serverId = getSelectedDockerServerId()) => {
-    setVolumesLoading(true);
+  const loadVolumes = async (serverId = getSelectedVolumeServerId(), { silent = false } = {}) => {
+    if (!silent) setVolumesLoading(true);
     setVolumesError('');
 
     try {
@@ -1128,18 +1172,18 @@ export default function Home() {
       setVolumes(response.data.volumes || []);
     } catch (error) {
       const data = error.response?.data;
-      setVolumes([]);
+      if (!silent) setVolumes([]);
       setVolumesError(data?.error || data?.output || 'Unable to load volumes.');
     } finally {
-      setVolumesLoading(false);
+      if (!silent) setVolumesLoading(false);
     }
   };
 
   useEffect(() => {
     if (isVolumeActive && volumeTab === 'delete') {
-      loadVolumes();
+      loadVolumes(getSelectedVolumeServerId());
     }
-  }, [isVolumeActive, volumeTab]);
+  }, [isVolumeActive, volumeTab, volumeServerId]);
 
   useEffect(() => {
     if (isContainerActive) {
@@ -1154,37 +1198,43 @@ export default function Home() {
       return undefined;
     }
 
-    const loadDashboardData = () => {
+    let cancelled = false;
+    let refreshTimer;
+    const loadDashboardData = async ({ silent = false } = {}) => {
       const serverId = getSelectedDashboardServerId();
+      const requests = [];
       const needsAgents = [
         'view_connected_agent', 'view_running_containers', 'view_stopped_containers',
         'view_recycle_bin', 'view_images', 'view_networks', 'view_volumes',
         'view_deployments', 'view_monitoring', 'view_server_info',
       ].some(canOperate);
-      if (needsAgents) loadAgents();
-      if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) loadContainers(serverId);
-      if (canOperate('view_images')) loadImages(serverId);
-      if (canOperate('view_networks')) loadNetworks(serverId);
-      if (canOperate('view_volumes')) loadVolumes(serverId);
-      if (canOperate('view_deployments')) loadDeployments();
-      if (canOperate('view_recycle_bin')) loadRecycledContainers();
-    };
-
-    const syncDashboardContainers = () => {
-      if (document.visibilityState !== 'visible') return;
-      const serverId = getSelectedDashboardServerId();
+      if (needsAgents) requests.push(loadAgents({ silent }));
       if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) {
-        loadContainers(serverId, { silent: true, preserveSelection: true });
+        requests.push(loadContainers(serverId, { silent, preserveSelection: silent }));
       }
-      if (canOperate('view_recycle_bin')) loadRecycledContainers({ silent: true });
+      if (canOperate('view_images')) requests.push(loadImages(serverId, { silent }));
+      if (canOperate('view_networks')) requests.push(loadNetworks(serverId, { silent }));
+      if (canOperate('view_volumes')) requests.push(loadVolumes(serverId, { silent }));
+      if (canOperate('view_deployments')) requests.push(loadDeployments({ silent }));
+      if (canOperate('view_recycle_bin')) requests.push(loadRecycledContainers({ silent }));
+      await Promise.allSettled(requests);
     };
 
-    loadDashboardData();
-    const refreshTimer = window.setInterval(loadDashboardData, 30000);
-    const containerSyncTimer = window.setInterval(syncDashboardContainers, 5000);
+    const refreshDashboard = async (initial = false) => {
+      const startedAt = Date.now();
+      if (initial || document.visibilityState === 'visible') {
+        await loadDashboardData({ silent: !initial });
+      }
+      if (!cancelled) {
+        const delay = Math.max(0, 1000 - (Date.now() - startedAt));
+        refreshTimer = window.setTimeout(() => refreshDashboard(false), delay);
+      }
+    };
+
+    refreshDashboard(true);
     return () => {
-      window.clearInterval(refreshTimer);
-      window.clearInterval(containerSyncTimer);
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
     };
   }, [isDashboardActive, dashboardServerId, currentUser]);
 
@@ -1415,30 +1465,51 @@ export default function Home() {
 
   useEffect(() => {
     if (!isMonitoringActive) return undefined;
+    let cancelled = false;
+    let refreshTimer;
     setSelectedMonitoringId('');
     setMonitoringDetail(null);
     setMonitoringHistory([]);
     loadAgents();
-    loadMonitoringContainers(monitoringServerId || LOCAL_SERVER_ID);
-    const syncMonitoringInventory = () => {
+    const syncMonitoringInventory = async (initial = false) => {
+      const startedAt = Date.now();
       if (document.visibilityState === 'visible') {
-        loadMonitoringContainers(monitoringServerId || LOCAL_SERVER_ID, { silent: true });
+        await loadMonitoringContainers(
+          monitoringServerId || LOCAL_SERVER_ID,
+          { silent: !initial }
+        );
+      }
+      if (!cancelled) {
+        const delay = Math.max(0, 5000 - (Date.now() - startedAt));
+        refreshTimer = window.setTimeout(() => syncMonitoringInventory(false), delay);
       }
     };
-    const timer = window.setInterval(syncMonitoringInventory, 10000);
-    return () => window.clearInterval(timer);
+    syncMonitoringInventory(true);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
+    };
   }, [isMonitoringActive, monitoringServerId]);
 
   useEffect(() => {
     if (!isMonitoringActive || !selectedMonitoringId) return undefined;
-    loadMonitoringDetail(selectedMonitoringId);
-    const syncMonitoringDetail = () => {
+    let cancelled = false;
+    let refreshTimer;
+    const syncMonitoringDetail = async (initial = false) => {
+      const startedAt = Date.now();
       if (document.visibilityState === 'visible') {
-        loadMonitoringDetail(selectedMonitoringId, { silent: true });
+        await loadMonitoringDetail(selectedMonitoringId, { silent: !initial });
+      }
+      if (!cancelled) {
+        const delay = Math.max(0, 1000 - (Date.now() - startedAt));
+        refreshTimer = window.setTimeout(() => syncMonitoringDetail(false), delay);
       }
     };
-    const timer = window.setInterval(syncMonitoringDetail, 3000);
-    return () => window.clearInterval(timer);
+    syncMonitoringDetail(true);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
+    };
   }, [isMonitoringActive, monitoringServerId, selectedMonitoringId]);
 
   useEffect(() => {
@@ -1713,18 +1784,21 @@ export default function Home() {
     }
     if (target === 'images') {
       setContainerServerId(dashboardServerId);
+      setImageServerId(dashboardServerId);
       setImageTab('delete');
       handleActionSelect(buildImageAction);
       return;
     }
     if (target === 'volumes') {
       setContainerServerId(dashboardServerId);
+      setVolumeServerId(dashboardServerId);
       setVolumeTab('delete');
       handleActionSelect(manualActions[3]);
       return;
     }
     if (target === 'networks') {
       setContainerServerId(dashboardServerId);
+      setNetworkServerId(dashboardServerId);
       setNetworkTab('delete');
       handleActionSelect(manualActions[2]);
       return;
@@ -1763,11 +1837,13 @@ export default function Home() {
       return;
     }
     if (target === 'networks') {
+      setNetworkServerId(containerServerId);
       setNetworkTab('delete');
       handleActionSelect(manualActions[2]);
       return;
     }
     if (target === 'volumes') {
+      setVolumeServerId(containerServerId);
       setVolumeTab('delete');
       handleActionSelect(manualActions[3]);
     }
@@ -2439,13 +2515,17 @@ export default function Home() {
     setBuildLoading(true);
 
     try {
-      const response = await authService.buildImage(imageName, dockerfilePath);
+      const response = await authService.buildImage(
+        imageName,
+        dockerfilePath,
+        getSelectedImageServerId()
+      );
       setBuildJobId(response.data.job_id);
       localStorage.setItem(BUILD_JOB_STORAGE_KEY, response.data.job_id);
       setBuildOutput(response.data.output || 'Starting Docker image build...\n');
       setBuildMessage('Image build is running. Open output to watch progress.');
       if (imageTab === 'delete') {
-        loadImages();
+        loadImages(getSelectedImageServerId());
       }
     } catch (error) {
       const data = error.response?.data;
@@ -2488,6 +2568,7 @@ export default function Home() {
         authService.deleteImage({
           name: getImageReference(image),
           id: getImageId(image),
+          server_id: getSelectedImageServerId(),
         })
       )
     );
@@ -2497,7 +2578,7 @@ export default function Home() {
 
     setPendingDeleteImages([]);
     setSelectedImages([]);
-    await loadImages();
+    await loadImages(getSelectedImageServerId());
     setImageDeleteLoading(false);
 
     if (failed.length) {
@@ -2529,6 +2610,35 @@ export default function Home() {
     }
   };
 
+  const handleImageServerChange = (serverId) => {
+    const normalizedServerId = serverId === LOCAL_SERVER_ID ? '' : serverId;
+    setImageServerId(normalizedServerId);
+    setDockerfilePath('');
+    setFileBrowserOpen(false);
+    setSelectedImages([]);
+    setPendingDeleteImages([]);
+    setImageDeleteMessage('');
+    setImagesError('');
+  };
+
+  const handleNetworkServerChange = (serverId) => {
+    const normalizedServerId = serverId === LOCAL_SERVER_ID ? '' : serverId;
+    setNetworkServerId(normalizedServerId);
+    setSelectedNetworks([]);
+    setPendingDeleteNetworks([]);
+    setNetworkDeleteMessage('');
+    setNetworksError('');
+  };
+
+  const handleVolumeServerChange = (serverId) => {
+    const normalizedServerId = serverId === LOCAL_SERVER_ID ? '' : serverId;
+    setVolumeServerId(normalizedServerId);
+    setSelectedVolumes([]);
+    setPendingDeleteVolumes([]);
+    setVolumeDeleteMessage('');
+    setVolumesError('');
+  };
+
   const handleCreateNetwork = async (event) => {
     event.preventDefault();
     setNetworkMessage('');
@@ -2538,13 +2648,14 @@ export default function Home() {
       const response = await authService.createNetwork({
         name: networkName,
         driver: networkDriver,
+        server_id: getSelectedNetworkServerId(),
       });
       const output = response.data.output ? ` ${response.data.output}` : '';
       setNetworkMessage(`Network created successfully.${output}`);
       setNetworkName('');
       setNetworkDriver('bridge');
       if (networkTab === 'delete') {
-        loadNetworks();
+        loadNetworks(getSelectedNetworkServerId());
       }
     } catch (error) {
       const data = error.response?.data;
@@ -2588,6 +2699,7 @@ export default function Home() {
         authService.deleteNetwork({
           name: getNetworkName(network),
           id: getNetworkId(network),
+          server_id: getSelectedNetworkServerId(),
         })
       )
     );
@@ -2597,7 +2709,7 @@ export default function Home() {
 
     setPendingDeleteNetworks([]);
     setSelectedNetworks([]);
-    await loadNetworks();
+    await loadNetworks(getSelectedNetworkServerId());
     setNetworkDeleteLoading(false);
 
     if (failed.length) {
@@ -2617,13 +2729,14 @@ export default function Home() {
       const response = await authService.createVolume({
         name: volumeName,
         driver: volumeDriver,
+        server_id: getSelectedVolumeServerId(),
       });
       const output = response.data.output ? ` ${response.data.output}` : '';
       setVolumeMessage(`Volume created successfully.${output}`);
       setVolumeName('');
       setVolumeDriver('local');
       if (volumeTab === 'delete') {
-        loadVolumes();
+        loadVolumes(getSelectedVolumeServerId());
       }
     } catch (error) {
       const data = error.response?.data;
@@ -2660,7 +2773,10 @@ export default function Home() {
     setVolumeDeleteMessage('');
 
     const results = await Promise.allSettled(
-      volumesToDelete.map((volume) => authService.deleteVolume(getVolumeName(volume)))
+      volumesToDelete.map((volume) => authService.deleteVolume(
+        getVolumeName(volume),
+        getSelectedVolumeServerId()
+      ))
     );
     const failed = results
       .map((result, index) => ({ result, volume: volumesToDelete[index] }))
@@ -2668,7 +2784,7 @@ export default function Home() {
 
     setPendingDeleteVolumes([]);
     setSelectedVolumes([]);
-    await loadVolumes();
+    await loadVolumes(getSelectedVolumeServerId());
     setVolumeDeleteLoading(false);
 
     if (failed.length) {
@@ -2714,12 +2830,12 @@ export default function Home() {
     };
   }, [outputModalDrag]);
 
-  const loadFileBrowser = async (path = '') => {
+  const loadFileBrowser = async (path = '', serverId = getSelectedDockerServerId()) => {
     setFileBrowserLoading(true);
     setFileBrowserError('');
 
     try {
-      const response = await authService.browseDockerfiles(path);
+      const response = await authService.browseDockerfiles(path, serverId);
       setFileBrowserData(response.data);
     } catch (error) {
       const data = error.response?.data;
@@ -2734,12 +2850,12 @@ export default function Home() {
 
   const openFileBrowser = () => {
     setFileBrowserOpen(true);
-    loadFileBrowser(dockerfilePath);
+    loadFileBrowser(dockerfilePath, getSelectedImageServerId());
   };
 
   const openContainerFileBrowser = () => {
     setFileBrowserOpen(true);
-    loadFileBrowser(containerDockerfilePath);
+    loadFileBrowser(containerDockerfilePath, getSelectedDockerServerId());
   };
 
   const loadComposeBrowser = async (path = '') => {
@@ -2765,8 +2881,8 @@ export default function Home() {
     loadComposeBrowser(composeFilePath);
   };
 
-  const loadDeployments = async () => {
-    setDeploymentsLoading(true);
+  const loadDeployments = async ({ silent = false } = {}) => {
+    if (!silent) setDeploymentsLoading(true);
     setDeploymentsError('');
 
     try {
@@ -2774,10 +2890,10 @@ export default function Home() {
       setDeployments(response.data.deployments || []);
     } catch (error) {
       const data = error.response?.data;
-      setDeployments([]);
+      if (!silent) setDeployments([]);
       setDeploymentsError(data?.error || data?.output || 'Unable to load deployments.');
     } finally {
-      setDeploymentsLoading(false);
+      if (!silent) setDeploymentsLoading(false);
     }
   };
 
@@ -3049,10 +3165,10 @@ export default function Home() {
   useEffect(() => {
     if (isDeploymentActive) {
       loadDeployments();
-      loadNetworks();
-      loadVolumes();
+      loadNetworks(deploymentServerId || LOCAL_SERVER_ID);
+      loadVolumes(deploymentServerId || LOCAL_SERVER_ID);
     }
-  }, [isDeploymentActive]);
+  }, [isDeploymentActive, deploymentServerId]);
 
   const loadRegistryImages = async () => {
     setRegistryImagesLoading(true);
@@ -3376,7 +3492,15 @@ export default function Home() {
             serverInfo={serverInfo}
             loading={serverInfoLoading}
             error={serverInfoError}
-            onRefresh={() => loadServerInfo(true)}
+            agents={agents}
+            agentsLoading={agentsLoading}
+            serverId={serverInfoServerId}
+            onServerIdChange={(serverId) => {
+              setServerInfoServerId(serverId === LOCAL_SERVER_ID ? '' : serverId);
+              setServerInfo(null);
+              setServerInfoError('');
+            }}
+            onRefresh={() => loadServerInfo(true, serverInfoServerId || LOCAL_SERVER_ID)}
           />
         ) : isMonitoringActive ? (
           <MonitoringPanel
@@ -3734,6 +3858,9 @@ export default function Home() {
           />
         ) : isBuildImageActive ? (
           <BuildImagePanel
+            agents={agents}
+            agentsLoading={agentsLoading}
+            serverId={imageServerId}
             imageName={imageName}
             dockerfilePath={dockerfilePath}
             buildLoading={buildLoading}
@@ -3752,6 +3879,7 @@ export default function Home() {
             outputOpen={outputOpen}
             outputModalPosition={outputModalPosition}
             onImageNameChange={setImageName}
+            onServerIdChange={handleImageServerChange}
             onDockerfilePathChange={setDockerfilePath}
             onBuildImage={handleBuildImage}
             onStopBuild={handleStopBuild}
@@ -3771,7 +3899,7 @@ export default function Home() {
             fileBrowserError={fileBrowserError}
             onOpenFileBrowser={openFileBrowser}
             onCloseFileBrowser={() => setFileBrowserOpen(false)}
-            onBrowsePath={loadFileBrowser}
+            onBrowsePath={(path) => loadFileBrowser(path, getSelectedImageServerId())}
             onSelectDockerfile={(path) => {
               setDockerfilePath(path);
               setFileBrowserOpen(false);
@@ -3780,6 +3908,9 @@ export default function Home() {
           />
         ) : isNetworkActive ? (
           <NetworkPanel
+            agents={agents}
+            agentsLoading={agentsLoading}
+            serverId={networkServerId}
             networkName={networkName}
             networkDriver={networkDriver}
             networkLoading={networkLoading}
@@ -3794,6 +3925,7 @@ export default function Home() {
             networkDeleteLoading={networkDeleteLoading}
             networkDeleteMessage={networkDeleteMessage}
             onNetworkNameChange={setNetworkName}
+            onServerIdChange={handleNetworkServerChange}
             onNetworkDriverChange={setNetworkDriver}
             onCreateNetwork={handleCreateNetwork}
             onNetworkTabChange={setNetworkTab}
@@ -3807,6 +3939,9 @@ export default function Home() {
           />
         ) : isVolumeActive ? (
           <VolumePanel
+            agents={agents}
+            agentsLoading={agentsLoading}
+            serverId={volumeServerId}
             volumeName={volumeName}
             volumeDriver={volumeDriver}
             volumeLoading={volumeLoading}
@@ -3821,6 +3956,7 @@ export default function Home() {
             volumeDeleteLoading={volumeDeleteLoading}
             volumeDeleteMessage={volumeDeleteMessage}
             onVolumeNameChange={setVolumeName}
+            onServerIdChange={handleVolumeServerChange}
             onVolumeDriverChange={setVolumeDriver}
             onCreateVolume={handleCreateVolume}
             onVolumeTabChange={setVolumeTab}
@@ -4005,16 +4141,16 @@ function MonitoringPanel({
   return (
     <section className="home-panel monitoring-panel">
       <PanelIntro title="Container Monitoring" description="Cloud-style live visibility for every Docker container on the selected server.">
-        <button type="button" className="home-secondary-button" onClick={onRefresh} disabled={loading}>Refresh</button>
+        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={loading}>Refresh</button>
       </PanelIntro>
 
       <div className="monitoring-toolbar">
         <label className="agent-select-field">
-          <span>Select Agent</span>
+          <span>Server to monitor</span>
           <select value={serverId || LOCAL_SERVER_ID} onChange={(event) => onServerIdChange(event.target.value === LOCAL_SERVER_ID ? '' : event.target.value)} disabled={agentsLoading || loading}>
-            <option value={LOCAL_SERVER_ID}>This application server</option>
+            <option value={LOCAL_SERVER_ID}>Application server - Local</option>
             {serverOptions.filter((agent) => agent.id !== LOCAL_SERVER_ID).map((agent) => (
-              <option value={agent.id} key={agent.id}>{agent.name} ({agent.server_ip}:{agent.port || 19541})</option>
+              <option value={agent.id} key={agent.id}>{agent.name} - Remote agent ({agent.server_ip}:{agent.port || 19541})</option>
             ))}
           </select>
         </label>
@@ -4060,7 +4196,7 @@ function MonitoringPanel({
               </div>
 
               <section className="monitoring-information">
-                <div className="monitoring-section-heading"><h3>Container Information</h3><span>Updated every 3 seconds</span></div>
+                <div className="monitoring-section-heading"><h3>Container Information</h3><span>Updated every second</span></div>
                 <dl className="monitoring-information-grid">
                   <div><dt>Container Name</dt><dd>{detail.name}</dd></div>
                   <div><dt>Status</dt><dd>{detail.status}</dd></div>
@@ -4149,6 +4285,7 @@ function DashboardPanel({
   onOpenResource,
   canOperate = () => true,
 }) {
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const serverOptions = ensureLocalServerOption(agents);
   const selectedServer = serverOptions.find((agent) => String(agent.id) === String(dashboardServerId || LOCAL_SERVER_ID)) || serverOptions[0];
   const runningContainers = containers.filter(isContainerRunning);
@@ -4178,29 +4315,38 @@ function DashboardPanel({
         title="Dashboard"
         description="Select an agent and jump into the exact Docker resource you want to manage."
       >
-        <button type="button" className="home-secondary-button" onClick={onRefresh} disabled={loading}>
+        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={loading}>
           {loading ? 'Refreshing...' : 'Refresh'}
         </button>
       </PanelIntro>
 
       <div className="dashboard-toolbar">
         <label className="agent-select-field">
-          <span>Select Agent</span>
+          <span>Dashboard server: {selectedServer?.name || 'Application server'}</span>
           <select
             value={dashboardServerId}
             onChange={(event) => onDashboardServerIdChange(event.target.value)}
             disabled={agentsLoading}
           >
-            <option value="">This application server (default)</option>
+            <option value="">Application server - Local (default)</option>
             {serverOptions
               .filter((agent) => agent.id !== LOCAL_SERVER_ID)
               .map((agent) => (
                 <option value={agent.id} key={agent.id} disabled={!agent.connected}>
-                  {agent.name} ({agent.server_ip}:{agent.port || 19541}) {agent.connected ? '' : '- Down'}
+                  {agent.name} - Remote agent ({agent.server_ip}:{agent.port || 19541}) {agent.connected ? '' : '- Down'}
                 </option>
               ))}
           </select>
         </label>
+        <button
+          type="button"
+          className="dashboard-cli-button"
+          onClick={() => setTerminalOpen(true)}
+          disabled={!canOperate('manage_agents') || agentsLoading || selectedServer?.connected === false}
+        >
+          <span aria-hidden="true">&gt;_</span>
+          Connect CLI - {selectedServer?.name || 'Application server'}
+        </button>
         <div className="dashboard-agent-summary">
           <span>{selectedServer?.name || 'Application server'}</span>
           <StatusBadge status={getAgentStatus(selectedServer)} />
@@ -4224,7 +4370,179 @@ function DashboardPanel({
           </button>
         ))}
       </div>
+
+      {terminalOpen ? (
+        <DashboardAgentTerminal
+          key={dashboardServerId || LOCAL_SERVER_ID}
+          server={selectedServer}
+          serverId={dashboardServerId || LOCAL_SERVER_ID}
+          onClose={() => setTerminalOpen(false)}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function DashboardAgentTerminal({ server, serverId, onClose }) {
+  const [cwd, setCwd] = useState('/');
+  const [command, setCommand] = useState('');
+  const [output, setOutput] = useState(
+    `Connected to ${server?.name || 'Application server'}.\nHost commands run with agent-level administrative access.\n`
+  );
+  const [running, setRunning] = useState(false);
+  const [fullScreen, setFullScreen] = useState(false);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [drag, setDrag] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const outputRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [output, running]);
+
+  useEffect(() => {
+    if (!drag) return undefined;
+    const handlePointerMove = (event) => {
+      setPosition({
+        x: drag.originX + event.clientX - drag.startX,
+        y: drag.originY + event.clientY - drag.startY,
+      });
+    };
+    const handlePointerUp = () => setDrag(null);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [drag]);
+
+  const prompt = `root@${server?.name || 'server'}:${cwd}#`;
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    const nextCommand = command.trim();
+    if (!nextCommand || running) return;
+    if (nextCommand === 'clear' || nextCommand === 'cls') {
+      setOutput('');
+      setCommand('');
+      setHistoryIndex(-1);
+      return;
+    }
+    if (nextCommand === 'exit' || nextCommand === 'logout') {
+      onClose();
+      return;
+    }
+
+    setOutput((current) => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${prompt} ${nextCommand}\n`);
+    setHistory((current) => [...current.filter((item) => item !== nextCommand), nextCommand].slice(-100));
+    setHistoryIndex(-1);
+    setCommand('');
+    setRunning(true);
+    try {
+      const response = await authService.runAgentTerminalCommand(serverId, nextCommand, cwd);
+      const data = response.data || {};
+      setCwd(data.cwd || cwd);
+      setOutput((current) => {
+        const commandOutput = data.output ? `${data.output}\n` : '';
+        const exitOutput = data.return_code && data.return_code !== 0 ? `[command exited with code ${data.return_code}]\n` : '';
+        return `${current}${commandOutput}${exitOutput}`;
+      });
+    } catch (error) {
+      const data = error.response?.data;
+      setOutput((current) => `${current}${data?.error || data?.output || 'Command failed.'}\n`);
+    } finally {
+      setRunning(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  };
+
+  const handleHistoryKeyDown = (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    if (!history.length) return;
+    if (event.key === 'ArrowUp') {
+      const nextIndex = historyIndex < 0 ? history.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(nextIndex);
+      setCommand(history[nextIndex]);
+      return;
+    }
+    const nextIndex = historyIndex < 0 ? -1 : historyIndex + 1;
+    if (nextIndex >= history.length) {
+      setHistoryIndex(-1);
+      setCommand('');
+    } else {
+      setHistoryIndex(nextIndex);
+      setCommand(history[nextIndex]);
+    }
+  };
+
+  return (
+    <OutputPortal>
+      <div
+        className={`output-modal dashboard-agent-terminal ${fullScreen ? 'full-screen' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dashboard-agent-terminal-title"
+        style={fullScreen ? undefined : { transform: `translate(${position.x}px, ${position.y}px)` }}
+      >
+        <div
+          className="output-modal-heading draggable dashboard-terminal-heading"
+          onPointerDown={(event) => {
+            if (fullScreen || event.button !== 0) return;
+            setDrag({
+              startX: event.clientX,
+              startY: event.clientY,
+              originX: position.x,
+              originY: position.y,
+            });
+          }}
+        >
+          <div>
+            <h3 id="dashboard-agent-terminal-title">{server?.name || 'Application server'} CLI</h3>
+            <p>{serverId === LOCAL_SERVER_ID ? 'Application server' : `${server?.server_ip}:${server?.port || 19541}`} - {cwd}</p>
+          </div>
+          <span className={`dashboard-terminal-status ${running ? 'running' : ''}`}>{running ? 'Running' : 'Connected'}</span>
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setFullScreen((current) => !current)}
+          >
+            {fullScreen ? 'Restore' : 'Full screen'}
+          </button>
+          <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div
+          className="dashboard-terminal-screen"
+          ref={outputRef}
+          onClick={() => inputRef.current?.focus()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <pre>{output}</pre>
+          <form className="dashboard-terminal-command" onSubmit={handleSubmit}>
+            <label htmlFor="dashboard-terminal-input">{prompt}</label>
+            <input
+              id="dashboard-terminal-input"
+              ref={inputRef}
+              value={command}
+              onChange={(event) => setCommand(event.target.value)}
+              onKeyDown={handleHistoryKeyDown}
+              disabled={running}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck="false"
+              autoFocus
+            />
+          </form>
+        </div>
+      </div>
+    </OutputPortal>
   );
 }
 
@@ -4573,7 +4891,7 @@ function CreateContainerPanel({
   const serverOptions = ensureLocalServerOption(agents);
   const selectedServer = serverOptions.find((agent) => String(agent.id) === String(containerServerId || LOCAL_SERVER_ID)) || serverOptions[0];
   const selectedTargetServerDown = selectedServer?.id !== LOCAL_SERVER_ID && selectedServer && !selectedServer.connected;
-  const targetServerUnavailableMessage = 'Target Server agent is deleted or stopped please check it otherwise go to create agent --> delete agent option --> Select existing agent and click on redeploy agent button.';
+  const targetServerUnavailableMessage = 'The selected server agent is stopped or deleted. Check the server, or open Agents > Delete Agent, choose it under "Deleted agent to restore or remove," and click "Redeploy selected agent."';
   const containerName_ = selectedContainer?.Names?.[0]?.replace(/^\//, '') || 'Unknown';
   const terminalContainerName = activeShellContainer?.name || containerName_;
   const terminalPath = activeShellContainer?.path || "/";
@@ -4706,18 +5024,18 @@ function CreateContainerPanel({
 
           <div className="container-field-group">
             <label className="agent-select-field">
-              <span>Select Agent</span>
+              <span>Create container on</span>
               <select
                 value={containerServerId}
                 onChange={(event) => onContainerServerIdChange(event.target.value)}
                 disabled={containerLoading || agentsLoading}
               >
-                <option value="">This application server (default)</option>
+                <option value="">Application server - Local (default)</option>
                 {serverOptions
                   .filter((agent) => agent.id !== LOCAL_SERVER_ID)
                   .map((agent) => (
                     <option value={agent.id} key={agent.id}>
-                      {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                      {agent.name} - Remote agent ({agent.server_ip}:{agent.port || 19541})
                     </option>
                   ))}
               </select>
@@ -4922,18 +5240,18 @@ function CreateContainerPanel({
       ) : (
         <div className="existing-container-panel">
           <label className="agent-select-field">
-            <span>Select Agent</span>
+            <span>View containers on</span>
             <select
               value={containerServerId}
               onChange={(event) => onContainerServerIdChange(event.target.value)}
               disabled={containersLoading || agentsLoading}
             >
-              <option value="">This application server (default)</option>
+              <option value="">Application server - Local (default)</option>
               {serverOptions
                 .filter((agent) => agent.id !== LOCAL_SERVER_ID)
                 .map((agent) => (
                   <option value={agent.id} key={agent.id}>
-                    {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                    {agent.name} - Remote agent ({agent.server_ip}:{agent.port || 19541})
                   </option>
                 ))}
             </select>
@@ -4991,7 +5309,7 @@ function CreateContainerPanel({
               <div className="containers-list">
                 <div className="resource-delete-toolbar">
                   <p>{selectedServerRecycledContainers.length} deleted container(s) available to restore.</p>
-                  <button type="button" className="home-secondary-button" onClick={onRefreshRecycleBin} disabled={recycledContainersLoading}>
+                  <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshRecycleBin} disabled={recycledContainersLoading}>
                     Refresh
                   </button>
                 </div>
@@ -5325,18 +5643,18 @@ function CreateContainerPanel({
               Please select the same agent server before confirming restore.
             </p>
             <label>
-              <span>Select restore agent</span>
+              <span>Restore container on</span>
               <select
                 value={restoreContainerServerId || LOCAL_SERVER_ID}
                 onChange={(event) => onRestoreContainerServerIdChange(event.target.value === LOCAL_SERVER_ID ? '' : event.target.value)}
                 disabled={restoreContainerLoading}
               >
-                <option value={LOCAL_SERVER_ID}>This application server (default)</option>
+                <option value={LOCAL_SERVER_ID}>Application server - Local (default)</option>
                 {serverOptions
                   .filter((agent) => agent.id !== LOCAL_SERVER_ID)
                   .map((agent) => (
                     <option value={agent.id} key={agent.id}>
-                      {agent.name} ({agent.server_ip}:{agent.port || 19541})
+                      {agent.name} - Remote agent ({agent.server_ip}:{agent.port || 19541})
                     </option>
                   ))}
               </select>
@@ -5592,7 +5910,7 @@ function CreateContainerPanel({
             <div className="volume-gui-body" onPointerDown={(event) => event.stopPropagation()}>
               <div className="volume-gui-toolbar">
                 <button type="button" className="home-secondary-button" onClick={onVolumeGuiUp} disabled={volumeGuiLoading || !volumeGuiPath}>Back</button>
-                <button type="button" className="home-secondary-button" onClick={onVolumeGuiRefresh} disabled={volumeGuiLoading}>Refresh</button>
+                <button type="button" className="home-secondary-button refresh-action-button" onClick={onVolumeGuiRefresh} disabled={volumeGuiLoading}>Refresh</button>
                 <button type="button" className="home-secondary-button" onClick={onVolumeGuiNewFolder} disabled={volumeGuiLoading}>New folder</button>
                 <button type="button" className="home-primary-button" onClick={onVolumeGuiUploadClick} disabled={volumeGuiLoading}>Upload</button>
                 <input
@@ -5824,7 +6142,38 @@ function getContainerImageReference(registryId, imageName) {
   return `${registry.endpoint}/${normalizedImage}`;
 }
 
+function ResourceServerField({ agents, serverId, onServerIdChange, disabled, helpText }) {
+  const serverOptions = ensureLocalServerOption(agents || []);
+
+  return (
+    <label className="agent-select-field resource-server-field">
+      <span>Docker server</span>
+      <select
+        value={serverId || LOCAL_SERVER_ID}
+        onChange={(event) => onServerIdChange(event.target.value)}
+        disabled={disabled}
+      >
+        {serverOptions.map((agent) => {
+          const isLocal = agent.id === LOCAL_SERVER_ID;
+          const unavailable = !isLocal && agent.connected === false;
+          return (
+            <option value={agent.id} key={agent.id} disabled={unavailable}>
+              {isLocal
+                ? 'Application server (local)'
+                : `${agent.name} (${agent.server_ip}:${agent.port || 19541})${unavailable ? ' - unavailable' : ''}`}
+            </option>
+          );
+        })}
+      </select>
+      {helpText ? <small className="field-help">{helpText}</small> : null}
+    </label>
+  );
+}
+
 function VolumePanel({
+  agents,
+  agentsLoading,
+  serverId,
   volumeName,
   volumeDriver,
   volumeLoading,
@@ -5838,6 +6187,7 @@ function VolumePanel({
   pendingDeleteVolumes,
   volumeDeleteLoading,
   volumeDeleteMessage,
+  onServerIdChange,
   onVolumeNameChange,
   onVolumeDriverChange,
   onCreateVolume,
@@ -5882,6 +6232,14 @@ function VolumePanel({
 
       {volumeTab === 'create' ? (
         <form className="volume-form" onSubmit={onCreateVolume}>
+          <ResourceServerField
+            agents={agents}
+            serverId={serverId}
+            onServerIdChange={onServerIdChange}
+            disabled={agentsLoading || volumeLoading}
+            helpText="The volume will be created on this server."
+          />
+
           <label>
             <span>Volume name</span>
             <input
@@ -5917,11 +6275,19 @@ function VolumePanel({
         </form>
       ) : (
         <div className="volume-delete-panel">
+          <ResourceServerField
+            agents={agents}
+            serverId={serverId}
+            onServerIdChange={onServerIdChange}
+            disabled={agentsLoading || volumesLoading || volumeDeleteLoading}
+            helpText="Only volumes from the selected server are shown."
+          />
+
           <div className="volume-delete-toolbar">
             <p>{selectedVolumes.length ? `Selected: ${selectedVolumes.length} volume(s)` : 'Select one or more volumes to delete.'}</p>
             <button
               type="button"
-              className="home-secondary-button"
+              className="home-secondary-button refresh-action-button"
               onClick={() => {
                 onClearVolumeDeleteMessage();
                 onRefreshVolumes();
@@ -6079,6 +6445,9 @@ function toggleSelectedItem(items, item, getKey) {
 }
 
 function NetworkPanel({
+  agents,
+  agentsLoading,
+  serverId,
   networkName,
   networkDriver,
   networkLoading,
@@ -6092,6 +6461,7 @@ function NetworkPanel({
   pendingDeleteNetworks,
   networkDeleteLoading,
   networkDeleteMessage,
+  onServerIdChange,
   onNetworkNameChange,
   onNetworkDriverChange,
   onCreateNetwork,
@@ -6136,6 +6506,14 @@ function NetworkPanel({
 
       {networkTab === 'create' ? (
         <form className="network-form" onSubmit={onCreateNetwork}>
+          <ResourceServerField
+            agents={agents}
+            serverId={serverId}
+            onServerIdChange={onServerIdChange}
+            disabled={agentsLoading || networkLoading}
+            helpText="The network will be created on this server."
+          />
+
           <label>
             <span>Network name</span>
             <input
@@ -6174,11 +6552,19 @@ function NetworkPanel({
         </form>
       ) : (
         <div className="resource-delete-panel">
+          <ResourceServerField
+            agents={agents}
+            serverId={serverId}
+            onServerIdChange={onServerIdChange}
+            disabled={agentsLoading || networksLoading || networkDeleteLoading}
+            helpText="Only networks from the selected server are shown."
+          />
+
           <div className="resource-delete-toolbar">
             <p>{selectedNetworks.length ? `Selected: ${selectedNetworks.length} network(s)` : 'Select one or more networks to delete.'}</p>
             <button
               type="button"
-              className="home-secondary-button"
+              className="home-secondary-button refresh-action-button"
               onClick={() => {
                 onClearNetworkDeleteMessage();
                 onRefreshNetworks();
@@ -6523,18 +6909,18 @@ function DeploymentPanel({
           </label>
 
           <label className="agent-select-field">
-            <span>Select Agent</span>
+            <span>Deploy application on</span>
             <select
               value={deploymentServerId}
               onChange={(event) => onDeploymentServerIdChange(event.target.value)}
               disabled={deploymentLoading || agentsLoading}
             >
-              <option value="">This application server (default)</option>
+              <option value="">Application server - Local (default)</option>
               {ensureLocalServerOption(agents)
                 .filter((agent) => agent.id !== LOCAL_SERVER_ID)
                 .map((agent) => (
                   <option value={agent.id} key={agent.id} disabled={!agent.connected}>
-                    {agent.name} ({agent.server_ip}:{agent.port || 19541}) {agent.connected ? '' : '- Down'}
+                    {agent.name} - Remote agent ({agent.server_ip}:{agent.port || 19541}) {agent.connected ? '' : '- Down'}
                   </option>
                 ))}
             </select>
@@ -6568,7 +6954,7 @@ function DeploymentPanel({
           <div className="deployment-list-panel">
             <div className="resource-delete-toolbar">
               <p>{deployments.length ? `${deployments.length} deployment(s) available.` : 'No deployments found.'}</p>
-              <button type="button" className="home-secondary-button" onClick={onRefreshDeployments} disabled={deploymentsLoading}>
+              <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshDeployments} disabled={deploymentsLoading}>
                 Refresh
               </button>
             </div>
@@ -6602,7 +6988,7 @@ function DeploymentPanel({
                   <p>{asDisplayText(selectedDeployment.name, 'Deployment')}</p>
                   <button
                     type="button"
-                    className="home-secondary-button"
+                    className="home-secondary-button refresh-action-button"
                     onClick={onRefreshDeploymentDetail}
                     disabled={deploymentDetailLoading}
                   >
@@ -7120,13 +7506,13 @@ function RegistryPanel({
 
       <form className="build-image-form" onSubmit={onDeploy}>
         <label className="agent-select-field">
-          <span>Select Agent</span>
+          <span>Deployment agent</span>
           <select
             value={selectedAgentId}
             onChange={(event) => onSelectedAgentChange(event.target.value)}
             disabled={deployLoading || agentsLoading}
           >
-            <option value="">Select connected agent</option>
+            <option value="">Choose a connected agent</option>
             {connectedAgents.map((agent) => (
               <option value={agent.id} key={agent.id}>
                 {agent.name} ({agent.server_ip}:{agent.port || 19541})
@@ -7136,13 +7522,13 @@ function RegistryPanel({
         </label>
 
         <label>
-          <span>Registry image</span>
+          <span>Image tag to deploy</span>
           <select
             value={selectedImageId}
             onChange={(event) => onSelectedImageChange(event.target.value)}
             disabled={deployLoading || imagesLoading}
           >
-            <option value="">Select image tag</option>
+            <option value="">Choose an image tag</option>
             {images.map((image) => (
               <option value={image.id} key={image.id}>
                 {image.reference || `${image.name}:${image.tag}`}
@@ -7208,10 +7594,10 @@ function RegistryPanel({
           >
             {deployLoading ? 'Queueing deployment...' : 'Deploy image'}
           </button>
-          <button type="button" className="home-secondary-button" onClick={onRefreshImages} disabled={imagesLoading || deployLoading}>
+          <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshImages} disabled={imagesLoading || deployLoading}>
             Refresh images
           </button>
-          <button type="button" className="home-secondary-button" onClick={onRefreshAgents} disabled={agentsLoading || deployLoading}>
+          <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={agentsLoading || deployLoading}>
             Refresh agents
           </button>
         </div>
@@ -7226,6 +7612,9 @@ function RegistryPanel({
 }
 
 function BuildImagePanel({
+  agents,
+  agentsLoading,
+  serverId,
   imageName,
   dockerfilePath,
   buildLoading,
@@ -7243,6 +7632,7 @@ function BuildImagePanel({
   imageDeleteMessage,
   outputOpen,
   outputModalPosition,
+  onServerIdChange,
   onImageNameChange,
   onDockerfilePathChange,
   onBuildImage,
@@ -7299,6 +7689,14 @@ function BuildImagePanel({
 
       {imageTab === 'build' ? (
         <form className="build-image-form" onSubmit={onBuildImage}>
+          <ResourceServerField
+            agents={agents}
+            serverId={serverId}
+            onServerIdChange={onServerIdChange}
+            disabled={agentsLoading || buildLoading}
+            helpText="Browse and build using files on this server."
+          />
+
           <label>
             <span>Image name</span>
             <input
@@ -7360,11 +7758,19 @@ function BuildImagePanel({
         </form>
       ) : (
         <div className="resource-delete-panel">
+          <ResourceServerField
+            agents={agents}
+            serverId={serverId}
+            onServerIdChange={onServerIdChange}
+            disabled={agentsLoading || imagesLoading || imageDeleteLoading}
+            helpText="Only Docker images from the selected server are shown."
+          />
+
           <div className="resource-delete-toolbar">
             <p>{selectedImages.length ? `Selected: ${selectedImages.length} image(s)` : 'Select one or more images to delete.'}</p>
             <button
               type="button"
-              className="home-secondary-button"
+              className="home-secondary-button refresh-action-button"
               onClick={() => {
                 onClearImageDeleteMessage();
                 onRefreshImages();
@@ -7586,7 +7992,10 @@ function FileBrowserModal({
         <div className="output-modal-heading">
           <div>
             <h3 id="file-browser-title">Select Dockerfile</h3>
-            <p>{data?.current_path || 'Loading server folders...'}</p>
+            <p>
+              {data?.server_name ? `${data.server_name} - ` : ''}
+              {data?.current_path || 'Loading server folders...'}
+            </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close file browser">
             Close
@@ -7694,19 +8103,15 @@ function AgentPanel({
 
   const getAgentSetupCommandText = (value) => {
     const lines = String(value || '').replace(/\r\n/g, '\n').split('\n');
-    const startIndex = lines.findIndex((line) => {
-      const trimmed = line.trim();
-      return trimmed.startsWith('docker pull ') || trimmed.startsWith('docker rm ') || trimmed.startsWith('docker run ');
-    });
+    const startIndex = lines.findIndex((line) => line.trim() === 'docker run -d \\');
     if (startIndex === -1) {
       return String(value || '').trim();
     }
 
-    let endIndex = lines.length;
-    for (let index = startIndex + 1; index < lines.length; index += 1) {
-      const line = lines[index].trim();
-      if (line.startsWith('After the container starts, ')) {
-        endIndex = index;
+    let endIndex = startIndex + 1;
+    for (; endIndex < lines.length; endIndex += 1) {
+      if (!lines[endIndex].trim().endsWith('\\')) {
+        endIndex += 1;
         break;
       }
     }
@@ -7854,13 +8259,13 @@ function AgentPanel({
             <div className="agent-form">
               <div className="agent-management-grid">
                 <label>
-                  <span>Select existing agent</span>
+                  <span>Active agent to delete</span>
                   <select
                     value={selectedAgentId}
                     onChange={(event) => onSelectedAgentChange(event.target.value)}
                     disabled={agentDeleteLoading || agentRemoveLoading || agentRedeployLoading || agentsLoading}
                   >
-                    <option value="">Select agent</option>
+                    <option value="">Choose an active agent</option>
                     {deletableAgents.map((agent) => (
                       <option value={agent.id} key={agent.id}>
                         {agent.name} ({agent.server_ip}:{agent.port || 19541})
@@ -7870,7 +8275,7 @@ function AgentPanel({
                 </label>
 
                 <div className="agent-deleted-field">
-                  <label htmlFor="deleted-agent-select">Select deleted agent</label>
+                  <label htmlFor="deleted-agent-select">Deleted agent to restore or remove</label>
                   <div className="agent-deleted-select-row">
                     <select
                       id="deleted-agent-select"
@@ -7878,7 +8283,7 @@ function AgentPanel({
                       onChange={(event) => onSelectedDeletedAgentChange(event.target.value)}
                       disabled={agentDeleteLoading || agentRemoveLoading || agentRedeployLoading || agentsLoading}
                     >
-                      <option value="">Select deleted agent</option>
+                      <option value="">Choose a deleted agent</option>
                       {restorableAgents.map((agent) => (
                         <option value={agent.id} key={agent.id}>
                           {agent.name} ({agent.server_ip}:{agent.port || 19541})
@@ -7921,7 +8326,7 @@ function AgentPanel({
                 >
                   {agentRedeployLoading ? 'Redeploying agent...' : 'Redeploy selected agent'}
                 </button>
-                <button type="button" className="home-secondary-button" onClick={onRefreshAgents} disabled={agentsLoading || agentRemoveLoading || agentRedeployLoading}>
+                <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={agentsLoading || agentRemoveLoading || agentRedeployLoading}>
                   Refresh
                 </button>
                 <button
@@ -7936,63 +8341,65 @@ function AgentPanel({
           )}
 
           {pendingRemoveAgent && (
-            <div className="output-modal-backdrop" role="presentation">
-              <div
-                className="resource-delete-modal agent-remove-confirm-modal"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="agent-remove-title"
-                aria-describedby="agent-remove-description agent-remove-note"
-              >
-                <div className="agent-remove-confirm-heading">
-                  <span className="agent-remove-confirm-icon" aria-hidden="true">!</span>
-                  <div>
-                    <span>Permanent removal</span>
-                    <h3 id="agent-remove-title">Remove {pendingRemoveAgent.name}?</h3>
+            <OutputPortal>
+              <div className="output-modal-backdrop" role="presentation">
+                <div
+                  className="resource-delete-modal agent-remove-confirm-modal"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="agent-remove-title"
+                  aria-describedby="agent-remove-description agent-remove-note"
+                >
+                  <div className="agent-remove-confirm-heading">
+                    <span className="agent-remove-confirm-icon" aria-hidden="true">!</span>
+                    <div>
+                      <span>Permanent removal</span>
+                      <h3 id="agent-remove-title">Remove {pendingRemoveAgent.name}?</h3>
+                    </div>
+                  </div>
+
+                  <p id="agent-remove-description">
+                    Are you sure you want to permanently remove this agent from the deleted agents list?
+                  </p>
+
+                  <div className="agent-remove-confirm-target">
+                    <span>Agent</span>
+                    <strong>{pendingRemoveAgent.name}</strong>
+                    <small>{pendingRemoveAgent.server_ip}:{pendingRemoveAgent.port || 19541}</small>
+                  </div>
+
+                  <p className="agent-remove-confirm-note" id="agent-remove-note">
+                    <strong>Note:</strong> This agent cannot be redeployed after removal. If you want to manage this server again, you will need to create a new agent.
+                  </p>
+
+                  {removeAgentAttempted && agentMessage ? (
+                    <p className="container-message error" role="alert">{agentMessage}</p>
+                  ) : null}
+
+                  <div className="resource-modal-actions">
+                    <button
+                      type="button"
+                      className="home-danger-button"
+                      onClick={handleConfirmRemoveAgent}
+                      disabled={agentRemoveLoading}
+                    >
+                      {agentRemoveLoading ? `Removing ${pendingRemoveAgent.name}...` : 'Confirm'}
+                    </button>
+                    <button
+                      type="button"
+                      className="home-secondary-button"
+                      onClick={() => {
+                        setPendingRemoveAgentId('');
+                        setRemoveAgentAttempted(false);
+                      }}
+                      disabled={agentRemoveLoading}
+                    >
+                      Cancel
+                    </button>
                   </div>
                 </div>
-
-                <p id="agent-remove-description">
-                  Are you sure you want to permanently remove this agent from the deleted agents list?
-                </p>
-
-                <div className="agent-remove-confirm-target">
-                  <span>Agent</span>
-                  <strong>{pendingRemoveAgent.name}</strong>
-                  <small>{pendingRemoveAgent.server_ip}:{pendingRemoveAgent.port || 19541}</small>
-                </div>
-
-                <p className="agent-remove-confirm-note" id="agent-remove-note">
-                  <strong>Note:</strong> This agent cannot be redeployed after removal. If you want to manage this server again, you will need to create a new agent.
-                </p>
-
-                {removeAgentAttempted && agentMessage ? (
-                  <p className="container-message error" role="alert">{agentMessage}</p>
-                ) : null}
-
-                <div className="resource-modal-actions">
-                  <button
-                    type="button"
-                    className="home-danger-button"
-                    onClick={handleConfirmRemoveAgent}
-                    disabled={agentRemoveLoading}
-                  >
-                    {agentRemoveLoading ? `Removing ${pendingRemoveAgent.name}...` : 'Confirm'}
-                  </button>
-                  <button
-                    type="button"
-                    className="home-secondary-button"
-                    onClick={() => {
-                      setPendingRemoveAgentId('');
-                      setRemoveAgentAttempted(false);
-                    }}
-                    disabled={agentRemoveLoading}
-                  >
-                    Cancel
-                  </button>
-                </div>
               </div>
-            </div>
+            </OutputPortal>
           )}
 
           {agentCreateOutputOpen && (
@@ -8079,7 +8486,7 @@ function AgentPanel({
         <div className="connected-agent-panel">
           <div className="resource-delete-toolbar">
             <p>{agentsError ? 'Unable to load agents.' : (agents.length ? `${agents.length} server(s) available.` : 'No connected agents found.')}</p>
-            <button type="button" className="home-secondary-button" onClick={onRefreshAgents} disabled={agentsLoading}>
+            <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={agentsLoading}>
               Refresh
             </button>
           </div>
@@ -8284,7 +8691,7 @@ function RbacPanel({
           <h2>Users & Access</h2>
           <p>Create scoped users and reusable groups without changing existing accounts.</p>
         </div>
-        <button type="button" className="home-secondary-button" onClick={onRefresh} disabled={rbacLoading}>Refresh</button>
+        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={rbacLoading}>Refresh</button>
       </div>
 
       <div className="rbac-mode-heading">
@@ -8303,7 +8710,7 @@ function RbacPanel({
             <label>
               <span>Access group</span>
               <select value={rbacUserGroupId} onChange={(event) => onUserGroupChange(event.target.value)} disabled={rbacLoading}>
-                <option value="">No group</option>
+                <option value="">No group - Use direct permissions</option>
                 {groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}
               </select>
               <small className="field-help">Choose a group to inherit its operations. Direct operations are disabled while a group is selected.</small>
@@ -8372,12 +8779,31 @@ function RbacPanel({
   );
 }
 
-function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
+function ServerInfoPanel({
+  serverInfo,
+  loading,
+  error,
+  agents,
+  agentsLoading,
+  serverId,
+  onServerIdChange,
+  onRefresh,
+}) {
   const onBackToDashboard = useContext(DashboardBackContext);
+  const agentSelector = (
+    <ResourceServerField
+      agents={agents}
+      serverId={serverId}
+      onServerIdChange={onServerIdChange}
+      disabled={agentsLoading || loading}
+      helpText="Health and Docker details are loaded from this server."
+    />
+  );
 
   if (loading) {
     return (
       <section className="server-info-panel server-health-state-panel" aria-live="polite">
+        {agentSelector}
         <div className="server-health-state-copy">
           <span className="server-health-pulse" aria-hidden="true" />
           <div>
@@ -8398,6 +8824,7 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
   if (error) {
     return (
       <section className="server-info-panel server-health-state-panel">
+        {agentSelector}
         <div className="server-health-error-mark" aria-hidden="true">!</div>
         <div className="server-health-state-copy">
           <div>
@@ -8406,7 +8833,7 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
             <p>{error} Check that the backend server is reachable, then try again.</p>
           </div>
         </div>
-        <button type="button" className="home-primary-button" onClick={onRefresh}>
+        <button type="button" className="home-primary-button refresh-action-button" onClick={onRefresh}>
           Try again
         </button>
       </section>
@@ -8473,10 +8900,10 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
         <div>
           <span className="server-health-eyebrow">Live diagnostics</span>
           <h2>Server Health</h2>
-          <p>Automatically checked every minute</p>
+          <p>{serverInfo.server_name || 'Application server'} - automatically checked every 5 seconds</p>
         </div>
         <div className="server-info-actions">
-          <button type="button" className="home-primary-button" onClick={onRefresh}>
+          <button type="button" className="home-primary-button refresh-action-button" onClick={onRefresh}>
             Refresh
           </button>
           {onBackToDashboard ? (
@@ -8485,6 +8912,10 @@ function ServerInfoPanel({ serverInfo, loading, error, onRefresh }) {
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div className="server-health-agent-picker">
+        {agentSelector}
       </div>
 
       <article className={`server-health-overview ${healthStatus.tone}`}>

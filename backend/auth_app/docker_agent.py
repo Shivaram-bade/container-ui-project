@@ -286,14 +286,14 @@ def main():
     last_deployment_poll = 0
     while True:
         now = time.time()
-        if now - last_heartbeat >= 60:
+        if now - last_heartbeat >= 5:
             heartbeat()
             last_heartbeat = now
         handled = poll_command()
         if now - last_deployment_poll >= 30:
             handled = poll_deployment() or handled
             last_deployment_poll = now
-        time.sleep(0.5 if handled else 2)
+        time.sleep(0.1 if handled else 0.25)
 
 
 if __name__ == '__main__':

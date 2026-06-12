@@ -1702,16 +1702,15 @@ export default function Home() {
 
   const handleContainerLogs = () => {
     if (!selectedContainer) return;
-    const containerId = selectedContainer.ID || selectedContainer.Id || selectedContainer.id;
-    const name = selectedContainer.Names?.[0]?.replace(/^[/]/, '') || containerId;
+    const containerId = getContainerId(selectedContainer);
+    const name = getContainerName(selectedContainer);
     loadContainerLogs(containerId, getSelectedDockerServerId(), name + ' logs');
   };
 
 
   const handleContainerInspect = () => {
     if (!selectedContainerDetail) return;
-    const containerId = selectedContainer.ID || selectedContainer.Id || selectedContainer.id;
-    const name = selectedContainer.Names?.[0]?.replace(/^[/]/, '') || containerId;
+    const name = getContainerName(selectedContainerDetail) || getContainerName(selectedContainer);
     setContainerInspectTitle(`${name} inspect`);
     setContainerInspectOutput(JSON.stringify(selectedContainerDetail, null, 2));
     setContainerInspectOutputOpen(true);
@@ -1935,8 +1934,8 @@ export default function Home() {
       Names: ['/' + (containerOverride.name || 'container')],
     } : selectedContainer;
     if (!targetContainer) return;
-    const selectedContainerId = targetContainer.ID || targetContainer.Id || targetContainer.id;
-    const selectedContainerName = targetContainer.Names?.[0]?.replace(/^\//, '') || 'container';
+    const selectedContainerId = getContainerId(targetContainer);
+    const selectedContainerName = getContainerName(targetContainer);
 
     if (!selectedContainerId) {
       setConnectMessage('Container ID is missing.');
@@ -4533,7 +4532,7 @@ function DashboardAgentTerminal({ server, serverId, onClose }) {
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => setFullScreen((current) => !current)}
           >
-            {fullScreen ? 'Restore' : 'Full screen'}
+            {fullScreen ? 'Min Screen' : 'Full Screen'}
           </button>
           <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={onClose}>
             Close
@@ -4913,7 +4912,7 @@ function CreateContainerPanel({
   const selectedServer = serverOptions.find((agent) => String(agent.id) === String(containerServerId || LOCAL_SERVER_ID)) || serverOptions[0];
   const selectedTargetServerDown = selectedServer?.id !== LOCAL_SERVER_ID && selectedServer && !selectedServer.connected;
   const targetServerUnavailableMessage = 'The selected server agent is stopped or deleted. Check the server, or open Agents > Delete Agent, choose it under "Deleted agent to restore or remove," and click "Redeploy selected agent."';
-  const containerName_ = selectedContainer?.Names?.[0]?.replace(/^\//, '') || 'Unknown';
+  const containerName_ = getContainerName(selectedContainerDetail || selectedContainer);
   const terminalContainerName = activeShellContainer?.name || containerName_;
   const terminalPath = activeShellContainer?.path || "/";
   const terminalTitle = activeShellContainer?.kind === "volume" ? "Connected to volume" : "Connected to " + terminalContainerName;
@@ -5402,7 +5401,6 @@ function CreateContainerPanel({
                 <div className="containers-grid">
                   {displayedContainers.map((container) => {
                     const id = getContainerId(container);
-                    const name = container.Names?.[0]?.replace(/^\//, '') || 'Unknown';
                     const isSelected = selectedContainer?.ID === id || selectedContainer?.Id === id || selectedContainer?.id === id;
                     
                     return (
@@ -6098,7 +6096,12 @@ function getContainerId(container) {
 }
 
 function getContainerName(container) {
-  return container?.Names?.[0]?.replace(/^[/]/, '') || container?.Names || container?.Name || container?.name || 'Unknown';
+  const names = container?.Names;
+  const listedName = Array.isArray(names) ? names.find(Boolean) : names;
+  const rawName = listedName || container?.Name || container?.name;
+
+  if (typeof rawName !== 'string') return 'Unknown';
+  return rawName.trim().replace(/^\/+/, '') || 'Unknown';
 }
 
 function asArray(value) {

@@ -62,6 +62,7 @@ CONTAINER_SHELLS = {}
 CONTAINER_SHELLS_LOCK = threading.Lock()
 
 RECYCLED_CONTAINER_SNAPSHOT_KEY = '_vitel_recycle_snapshot'
+VOLUME_HELPER_IMAGE = 'alpine:latest'
 
 TERMINAL_CONTROL_SEQUENCE_RE = re.compile(
     r'\x1B(?:'
@@ -331,16 +332,17 @@ def get_verified_volume_mount(request):
 
     agent, password, remote_agent, error_response = get_docker_target_context(request)
     if error_response:
-        return None, None, None, error_response
-    if remote_agent:
-        return None, None, None, Response({
-            'success': False,
-            'error': 'Volume GUI is available only when the selected agent is managed by this application server.',
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return None, None, None, None, error_response
 
-    inspect_result = run_docker_command(['docker', 'inspect', container_id, '--format', '{{json .}}'], timeout=30)
+    inspect_result = run_target_docker_command(
+        agent,
+        password,
+        remote_agent,
+        ['docker', 'inspect', container_id, '--format', '{{json .}}'],
+        timeout=30,
+    )
     if not inspect_result['success']:
-        return None, None, None, Response({
+        return None, None, None, None, Response({
             **inspect_result,
             'error': inspect_result['output'] or 'Unable to inspect container.',
         }, status=status.HTTP_400_BAD_REQUEST)
@@ -348,7 +350,7 @@ def get_verified_volume_mount(request):
     try:
         container_data = json.loads(inspect_result['output'].splitlines()[0])
     except (json.JSONDecodeError, IndexError):
-        return None, None, None, Response({
+        return None, None, None, None, Response({
             'success': False,
             'error': 'Failed to read container details before opening volume GUI.',
         }, status=status.HTTP_400_BAD_REQUEST)
@@ -363,27 +365,79 @@ def get_verified_volume_mount(request):
             break
 
     if not matching_mount:
-        return None, None, None, Response({
+        return None, None, None, None, Response({
             'success': False,
             'error': 'Selected volume mount was not found on this container.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
     if not matching_mount.get('Source'):
-        return None, None, None, Response({
+        return None, None, None, None, Response({
             'success': False,
             'error': 'Selected mount does not expose a Docker volume source path.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    return container_id, container_data, matching_mount, None
+    target_context = {
+        'agent': agent,
+        'password': password,
+        'remote_agent': remote_agent,
+    }
+    return container_id, container_data, matching_mount, target_context, None
 
 
-def run_volume_browser_command(mount_source, script, env_vars=None, timeout=60):
+def ensure_volume_helper_image(agent=None, password='', remote_agent=False):
+    inspect_result = run_target_docker_command(
+        agent,
+        password,
+        remote_agent,
+        ['docker', 'image', 'inspect', VOLUME_HELPER_IMAGE],
+        timeout=30,
+    )
+    if inspect_result['success']:
+        return inspect_result
+    return run_target_docker_command(
+        agent,
+        password,
+        remote_agent,
+        ['docker', 'pull', VOLUME_HELPER_IMAGE],
+        timeout=300,
+    )
+
+
+def remove_volume_helper_image(agent=None, password='', remote_agent=False):
+    quoted_image = shlex.quote(VOLUME_HELPER_IMAGE)
+    cleanup_script = (
+        f'if ! docker image inspect {quoted_image} >/dev/null 2>&1; then exit 0; fi; '
+        'attempt=0; '
+        'while [ "$attempt" -lt 5 ]; do '
+        f'  docker image rm {quoted_image} >/dev/null 2>&1 && exit 0; '
+        '  attempt=$((attempt + 1)); sleep 1; '
+        'done; '
+        f'! docker image inspect {quoted_image} >/dev/null 2>&1'
+    )
+    return run_target_docker_command(
+        agent,
+        password,
+        remote_agent,
+        ['sh', '-lc', cleanup_script],
+        timeout=15,
+    )
+
+
+def run_volume_browser_command(mount_source, script, env_vars=None, timeout=60, target_context=None):
+    target_context = target_context or {}
+    agent = target_context.get('agent')
+    password = target_context.get('password', '')
+    remote_agent = bool(target_context.get('remote_agent'))
+    image_result = ensure_volume_helper_image(agent, password, remote_agent)
+    if not image_result['success']:
+        return image_result
+
     command = ['docker', 'run', '--rm', '-v', f'{mount_source}:{mount_source}']
     merged_env = {'VOLUME_ROOT': mount_source, **(env_vars or {})}
     for key, value in merged_env.items():
         command.extend(['-e', f'{key}={value}'])
-    command.extend(['alpine', 'sh', '-lc', script])
-    return run_docker_command(command, timeout=timeout)
+    command.extend(['--pull=never', VOLUME_HELPER_IMAGE, 'sh', '-lc', script])
+    return run_target_docker_command(agent, password, remote_agent, command, timeout=timeout)
 
 
 def volume_command_error(result, fallback):
@@ -2650,12 +2704,100 @@ def start_container_shell(container_id, container_name="container", user=None):
         return None, "", str(exc)
 
 
-def start_volume_shell(container_id, mount_source, mount_name="", mount_destination="", user=None):
+def start_remote_volume_shell(
+    container_id,
+    mount_source,
+    mount_name="",
+    mount_destination="",
+    user=None,
+    agent=None,
+    password="",
+):
+    safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", mount_name or mount_destination or "volume").strip("-")[:48] or "volume"
+    session_container_name = f"vitel-volume-shell-{safe_label}-{uuid.uuid4().hex[:8]}"
+    terminal_path = mount_source if mount_source.startswith("/") else "/" + mount_source.lstrip("/")
+    volume_spec = f"{mount_source}:{terminal_path}"
+    image_result = ensure_volume_helper_image(agent, password, True)
+    if not image_result['success']:
+        return None, "", "", "", "", image_result.get('output') or 'Failed to pull the volume helper image.'
+
+    display_command = [
+        "docker", "run", "--rm", "-d",
+        "--name", session_container_name,
+        "-v", volume_spec,
+        "--pull=never",
+        VOLUME_HELPER_IMAGE,
+        "sh", "-lc", "while :; do sleep 3600; done",
+    ]
+    start_result = run_target_docker_command(agent, password, True, display_command, timeout=60)
+    if not start_result['success']:
+        remove_volume_helper_image(agent, password, True)
+        return None, "", "", "", "", start_result.get('output') or 'Failed to start the remote volume helper container.'
+
+    path_result = run_target_docker_command(
+        agent,
+        password,
+        True,
+        [
+            "docker", "exec", session_container_name, "sh", "-lc",
+            'target="$1"; if [ -d "$target" ]; then cd "$target"; '
+            'elif [ -e "$target" ]; then cd "$(dirname "$target")"; else cd /; fi; pwd',
+            "sh", terminal_path,
+        ],
+        timeout=30,
+    )
+    current_path = path_result.get('output', '').splitlines()[0].strip() if path_result['success'] and path_result.get('output') else '/'
+    session_id = uuid.uuid4().hex
+
+    with CONTAINER_SHELLS_LOCK:
+        CONTAINER_SHELLS[session_id] = {
+            "remote_volume": True,
+            "agent": agent,
+            "password": password,
+            "container_id": container_id,
+            "user_id": getattr(user, "id", None),
+            "shell": shlex.join(display_command),
+            "output_buffer": "",
+            "closed": False,
+            "temporary_container": session_container_name,
+            "temporary_image": VOLUME_HELPER_IMAGE,
+            "terminal_path": current_path,
+            "startup_output": "",
+        }
+
+    return session_id, session_container_name, current_path, shlex.join(display_command), "", None
+
+
+def start_volume_shell(
+    container_id,
+    mount_source,
+    mount_name="",
+    mount_destination="",
+    user=None,
+    agent=None,
+    password="",
+    remote_agent=False,
+):
     """Start an interactive Alpine shell with one mounted container volume."""
+    if remote_agent:
+        return start_remote_volume_shell(
+            container_id,
+            mount_source,
+            mount_name,
+            mount_destination,
+            user,
+            agent,
+            password,
+        )
+
     master_fd = None
     slave_fd = None
     session_container_name = ""
     try:
+        image_result = ensure_volume_helper_image()
+        if not image_result['success']:
+            raise RuntimeError(image_result.get('output') or 'Failed to pull the volume helper image.')
+
         safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", mount_name or mount_destination or "volume").strip("-")[:48] or "volume"
         session_container_name = f"vitel-volume-shell-{safe_label}-{uuid.uuid4().hex[:8]}"
         terminal_path = mount_source if mount_source.startswith("/") else "/" + mount_source.lstrip("/")
@@ -2663,7 +2805,7 @@ def start_volume_shell(container_id, mount_source, mount_name="", mount_destinat
         display_command = [
             "docker", "run", "--rm", "-it",
             "-v", volume_spec,
-            "alpine", "sh",
+            "--pull=never", VOLUME_HELPER_IMAGE, "sh",
         ]
         shell_display = shlex.join(display_command)
 
@@ -2686,7 +2828,7 @@ def start_volume_shell(container_id, mount_source, mount_name="", mount_destinat
                 "--name", session_container_name,
                 "-v", volume_spec,
                 "-e", "TERM=dumb",
-                "alpine", "sh", "-lc",
+                "--pull=never", VOLUME_HELPER_IMAGE, "sh", "-lc",
                 shell_startup_command,
             ],
             stdin=slave_fd,
@@ -2737,6 +2879,7 @@ def start_volume_shell(container_id, mount_source, mount_name="", mount_destinat
                 "output_buffer": "",
                 "closed": False,
                 "temporary_container": session_container_name,
+                "temporary_image": VOLUME_HELPER_IMAGE,
                 "terminal_path": terminal_path,
                 "startup_output": startup_output,
             }
@@ -2745,6 +2888,7 @@ def start_volume_shell(container_id, mount_source, mount_name="", mount_destinat
     except Exception as exc:
         if session_container_name:
             run_docker_command(["docker", "rm", "-f", session_container_name], timeout=10)
+        remove_volume_helper_image()
         if slave_fd is not None:
             try:
                 os.close(slave_fd)
@@ -2774,9 +2918,57 @@ def send_shell_command(session_id, command, user=None):
         
         if session['closed']:
             return False, 'Session is closed'
-        
-        fd = session['fd']
-    
+
+        if session.get('remote_volume'):
+            agent = session.get('agent')
+            password = session.get('password', '')
+            temporary_container = session.get('temporary_container')
+            current_path = session.get('terminal_path') or '/'
+        else:
+            agent = None
+            password = ''
+            temporary_container = ''
+            current_path = ''
+
+        fd = session.get('fd')
+
+    if temporary_container:
+        cwd_marker = f"__VITEL_CWD_{uuid.uuid4().hex}__"
+        command_script = (
+            f"{command}\n"
+            "command_status=$?\n"
+            f"printf '\\n{cwd_marker}\\n'\n"
+            "pwd\n"
+            'exit "$command_status"'
+        )
+        result = run_target_docker_command(
+            agent,
+            password,
+            True,
+            [
+                'docker', 'exec', '-w', current_path,
+                temporary_container, 'sh', '-lc', command_script,
+            ],
+            timeout=180,
+        )
+        output = result.get('output', '')
+        next_path = current_path
+        marker_index = output.rfind(cwd_marker)
+        if marker_index >= 0:
+            path_output = output[marker_index + len(cwd_marker):].strip().splitlines()
+            if path_output:
+                next_path = path_output[0].strip() or current_path
+            output = output[:marker_index].rstrip()
+        with CONTAINER_SHELLS_LOCK:
+            active_session = CONTAINER_SHELLS.get(session_id)
+            if active_session:
+                active_session['terminal_path'] = next_path
+                if output:
+                    active_session['output_buffer'] += output + '\n'
+        if result.get('return_code') is None:
+            return False, result.get('output') or 'Remote shell command failed.'
+        return True, None
+
     try:
         os.write(fd, (command + '\n').encode())
         return True, None
@@ -2793,6 +2985,11 @@ def read_shell_output(session_id, user=None, timeout=0.5):
         if not shell_session_is_owned_by_user(session, user):
             return None, 'Session not found'
         
+        if session.get('remote_volume'):
+            output = session.get('output_buffer', '')
+            session['output_buffer'] = ''
+            return output, None
+
         process = session['process']
         fd = session['fd']
     
@@ -2835,11 +3032,28 @@ def close_shell_session(session_id, user=None):
             return False, 'Session not found'
         CONTAINER_SHELLS.pop(session_id, None)
         
-        process = session['process']
+        remote_volume = bool(session.get('remote_volume'))
+        process = session.get('process')
         fd = session.get('fd')
         temporary_container = session.get('temporary_container')
+        temporary_image = session.get('temporary_image')
+        agent = session.get('agent')
+        password = session.get('password', '')
         session['closed'] = True
-    
+
+    if remote_volume:
+        if temporary_container:
+            run_target_docker_command(
+                agent,
+                password,
+                True,
+                ['docker', 'rm', '-f', temporary_container],
+                timeout=30,
+            )
+        if temporary_image:
+            remove_volume_helper_image(agent, password, True)
+        return True, None
+
     try:
         process.terminate()
         process.wait(timeout=2)
@@ -2851,6 +3065,8 @@ def close_shell_session(session_id, user=None):
     finally:
         if temporary_container:
             run_docker_command(['docker', 'rm', '-f', temporary_container], timeout=10)
+        if temporary_image:
+            remove_volume_helper_image()
         if fd is not None:
             try:
                 os.close(fd)
@@ -5287,13 +5503,14 @@ def connect_volume(request):
     agent, password, remote_agent, error_response = get_docker_target_context(request)
     if error_response:
         return error_response
-    if remote_agent:
-        return Response({
-            'success': False,
-            'error': 'Volume terminal is available only when the selected agent is managed by this application server.',
-        }, status=status.HTTP_400_BAD_REQUEST)
 
-    inspect_result = run_docker_command(['docker', 'inspect', container_id, '--format', '{{json .}}'], timeout=30)
+    inspect_result = run_target_docker_command(
+        agent,
+        password,
+        remote_agent,
+        ['docker', 'inspect', container_id, '--format', '{{json .}}'],
+        timeout=30,
+    )
     if not inspect_result['success']:
         return Response({
             **inspect_result,
@@ -5336,6 +5553,9 @@ def connect_volume(request):
         matching_mount.get('Name', ''),
         matching_mount.get('Destination', ''),
         request.user,
+        agent,
+        password,
+        remote_agent,
     )
     if error:
         return Response({
@@ -5358,19 +5578,31 @@ def connect_volume(request):
         'temporary_container': temp_container,
         'terminal_path': terminal_path,
         'terminal_prompt': terminal_prompt,
+        'uses_native_prompt': not remote_agent,
         'shell_command': shell_display,
         'output': initial_output,
     }, status=status.HTTP_201_CREATED)
 
 
-@api_view(['GET', 'POST'])
+@api_view(['GET', 'POST', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def volume_files(request):
     """Browse and mutate files inside a selected container volume mount."""
     if not user_has_operation(request.user, 'connect_container'):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
 
-    container_id, container_data, matching_mount, error_response = get_verified_volume_mount(request)
+    if request.method == 'DELETE':
+        agent, password, remote_agent, error_response = get_docker_target_context(request)
+        if error_response:
+            return error_response
+        cleanup_result = remove_volume_helper_image(agent, password, remote_agent)
+        return Response({
+            'success': cleanup_result['success'],
+            'image': VOLUME_HELPER_IMAGE,
+            'image_removed': cleanup_result['success'],
+        }, status=status.HTTP_200_OK if cleanup_result['success'] else status.HTTP_409_CONFLICT)
+
+    container_id, container_data, matching_mount, target_context, error_response = get_verified_volume_mount(request)
     if error_response:
         return error_response
 
@@ -5399,7 +5631,13 @@ if [ ! -e "$target" ]; then echo "__VITEL_ERROR__:Path not found."; exit 2; fi
 if [ ! -f "$target" ]; then echo "__VITEL_ERROR__:Selected item is not a regular file."; exit 3; fi
 base64 "$target"
 """
-            result = run_volume_browser_command(mount_source, script, {'VOLUME_PATH': rel_path}, timeout=60)
+            result = run_volume_browser_command(
+                mount_source,
+                script,
+                {'VOLUME_PATH': rel_path},
+                timeout=60,
+                target_context=target_context,
+            )
             if not result['success']:
                 return Response({
                     'success': False,
@@ -5444,7 +5682,13 @@ for item in .[^.]* ..?* *; do
   printf "%s\t%s\t%s\t%s\n" "$item_type" "$item_size" "$item_modified" "$item_name"
 done
 """
-        result = run_volume_browser_command(mount_source, script, {'VOLUME_PATH': rel_path}, timeout=45)
+        result = run_volume_browser_command(
+            mount_source,
+            script,
+            {'VOLUME_PATH': rel_path},
+            timeout=45,
+            target_context=target_context,
+        )
         if not result['success']:
             return Response({
                 'success': False,
@@ -5554,7 +5798,13 @@ printf "%s" "$VOLUME_CONTENT_B64" | base64 -d > "$target"
     else:
         return Response({'success': False, 'error': 'Unsupported file operation.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    result = run_volume_browser_command(mount_source, script, env_vars, timeout=60)
+    result = run_volume_browser_command(
+        mount_source,
+        script,
+        env_vars,
+        timeout=60,
+        target_context=target_context,
+    )
     if not result['success']:
         return Response({
             'success': False,
@@ -5607,10 +5857,15 @@ def shell_output(request):
             'error': info,
         }, status=status.HTTP_404_NOT_FOUND)
     
+    with CONTAINER_SHELLS_LOCK:
+        session = CONTAINER_SHELLS.get(session_id)
+        terminal_path = session.get('terminal_path', '') if session else ''
+
     return Response({
         'success': True,
         'output': output,
         'status': info or 'ok',
+        'terminal_path': terminal_path,
     }, status=status.HTTP_200_OK)
 
 

@@ -5647,6 +5647,7 @@ input[type="checkbox"] {
 .terminal-input {
   background: transparent !important;
   color: #eaffff !important;
+  width: 1000px;
 }
 
 .skeleton-line {
@@ -8206,10 +8207,34 @@ input[type="checkbox"] {
   min-width: 0;
 }
 
-.resource-attachment > span:nth-child(2) {
+.resource-attachment-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.resource-attachment-name:focus {
+  outline: none;
+}
+
+.resource-attachment-tooltip {
+  position: fixed;
+  z-index: 10050;
+  display: block;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 8px 11px;
+  border: 1px solid rgba(84, 225, 211, 0.38);
+  border-radius: 6px;
+  color: #e8f7f5;
+  background: #071521;
+  box-shadow: 0 12px 28px rgba(1, 8, 15, 0.42);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.4;
+  white-space: normal;
+  pointer-events: none;
 }
 
 .resource-attachment small {

@@ -264,6 +264,12 @@ export const authService = {
     return api.post('/api/auth/volume-files/', volumeData);
   },
 
+  cleanupVolumeHelper: (serverId) => {
+    return api.delete('/api/auth/volume-files/', {
+      data: { ...(serverId ? { server_id: serverId } : {}) },
+    });
+  },
+
   sendShellCommand: (sessionId, command) => {
     return api.post('/api/auth/shell-command/', {
       session_id: sessionId,

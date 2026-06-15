@@ -1518,7 +1518,11 @@ export default function Home() {
       (isNetworkActive && networkTab === 'delete') ||
       (isVolumeActive && volumeTab === 'delete');
     if (!resourceInventoryVisible) return undefined;
-    const serverId = getSelectedDockerServerId();
+    const serverId = isBuildImageActive
+      ? getSelectedImageServerId()
+      : isNetworkActive
+        ? getSelectedNetworkServerId()
+        : getSelectedVolumeServerId();
     loadMonitoringContainers(serverId, { silent: true });
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
@@ -1526,7 +1530,17 @@ export default function Home() {
       }
     }, 10000);
     return () => window.clearInterval(timer);
-  }, [isBuildImageActive, imageTab, isNetworkActive, networkTab, isVolumeActive, volumeTab, containerServerId]);
+  }, [
+    isBuildImageActive,
+    imageTab,
+    imageServerId,
+    isNetworkActive,
+    networkTab,
+    networkServerId,
+    isVolumeActive,
+    volumeTab,
+    volumeServerId,
+  ]);
 
   useEffect(() => {
     if (!selectedContainer) return;
@@ -2012,10 +2026,25 @@ export default function Home() {
         setVolumeShellOutput((prev) => prev + data.output);
       }
 
+      if (data.terminal_path) {
+        setActiveVolumeShell((previous) => previous ? {
+          ...previous,
+          path: data.terminal_path,
+          prompt: `${data.terminal_path} #`,
+        } : previous);
+      }
+
       if (data.status === 'process_ended') {
         stopVolumeShellPolling();
-        volumeShellSessionIdRef.current = null;
-        setVolumeShellSessionId(null);
+        try {
+          await authService.closeShellSession(sessionId);
+        } catch (error) {
+          // The backend may already have released the session.
+        }
+        if (volumeShellSessionIdRef.current === sessionId) {
+          volumeShellSessionIdRef.current = null;
+          setVolumeShellSessionId(null);
+        }
       }
     } catch (error) {
       // Silently handle polling errors
@@ -2073,11 +2102,12 @@ export default function Home() {
   };
 
   const handleCloseVolumeShell = async () => {
-    await closeActiveVolumeShellSession();
+    const cleanupPromise = closeActiveVolumeShellSession();
     setVolumeConnectModalOpen(false);
     setActiveVolumeShell(null);
     setVolumeShellOutput('');
     setVolumeShellInput('');
+    await cleanupPromise;
   };
 
   const handleCloseShell = async () => {
@@ -2123,7 +2153,7 @@ export default function Home() {
           path: data.terminal_path || data.volume_destination || '/',
           prompt: data.terminal_prompt || '/ #',
           kind: 'volume',
-          usesNativePrompt: true,
+          usesNativePrompt: data.uses_native_prompt !== false,
         });
         setVolumeConnectModalOpen(true);
         setTimeout(() => volumeShellInputRef.current?.focus(), 0);
@@ -2215,13 +2245,19 @@ export default function Home() {
     }
   };
 
-  const handleCloseVolumeGui = () => {
+  const handleCloseVolumeGui = async () => {
+    const serverId = activeVolumeGui?.serverId || getSelectedDockerServerId();
     setVolumeGuiModalOpen(false);
     setActiveVolumeGui(null);
     setVolumeGuiPath('');
     setVolumeGuiEntries([]);
     setVolumeGuiMessage('');
     handleCloseVolumeFilePreview();
+    try {
+      await authService.cleanupVolumeHelper(serverId);
+    } catch (error) {
+      // Another active volume session may still be using the shared helper image.
+    }
   };
 
   const runVolumeGuiAction = async (action, path, extra = {}, refreshPath = volumeGuiPath) => {
@@ -4057,32 +4093,103 @@ function MonitoringChart({ title, value, primaryValues, secondaryValues = [], ma
   );
 }
 
-function ResourceAttachmentIndicator({ attached, label }) {
+function ResourceAttachmentIndicator({ containerNames = [], label }) {
+  const nameRef = useRef(null);
+  const [tooltipPosition, setTooltipPosition] = useState(null);
+  const attached = containerNames.length > 0;
+  const attachmentText = attached
+    ? `Attached to ${containerNames.join(', ')}`
+    : 'Not attached to any container';
+
+  const showTooltip = () => {
+    const target = nameRef.current;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    const tooltipWidth = Math.min(360, Math.max(180, window.innerWidth - 32));
+    const left = Math.max(16, Math.min(rect.left, window.innerWidth - tooltipWidth - 16));
+    const showAbove = rect.bottom + 52 > window.innerHeight;
+
+    setTooltipPosition({
+      left,
+      top: showAbove ? rect.top - 8 : rect.bottom + 8,
+      transform: showAbove ? 'translateY(-100%)' : 'none',
+    });
+  };
+
+  useEffect(() => {
+    if (!tooltipPosition) return undefined;
+    const hideTooltip = () => setTooltipPosition(null);
+    window.addEventListener('scroll', hideTooltip, true);
+    window.addEventListener('resize', hideTooltip);
+    return () => {
+      window.removeEventListener('scroll', hideTooltip, true);
+      window.removeEventListener('resize', hideTooltip);
+    };
+  }, [tooltipPosition]);
+
   return (
-    <span className="resource-attachment" title={attached ? 'Attached to a container' : 'Not attached to any container'}>
+    <span className="resource-attachment">
       <span className={'resource-attachment-dot ' + (attached ? 'attached' : 'detached')} aria-hidden="true" />
-      <span>{label}</span>
+      <span
+        ref={nameRef}
+        className="resource-attachment-name"
+        tabIndex="0"
+        aria-label={`${label}. ${attachmentText}`}
+        onMouseEnter={showTooltip}
+        onMouseLeave={() => setTooltipPosition(null)}
+        onFocus={showTooltip}
+        onBlur={() => setTooltipPosition(null)}
+      >
+        {label}
+      </span>
       <small>{attached ? 'Attached' : 'Not attached'}</small>
+      {tooltipPosition && typeof document !== 'undefined'
+        ? createPortal(
+          <span
+            className="resource-attachment-tooltip"
+            role="tooltip"
+            style={tooltipPosition}
+          >
+            {attachmentText}
+          </span>,
+          document.body
+        )
+        : null}
     </span>
   );
 }
 
-function isImageAttached(image, containers = []) {
+function getAttachedContainerNames(containers, matchesResource) {
+  return [...new Set(
+    containers
+      .filter(matchesResource)
+      .map((container) => getContainerName(container))
+      .filter((name) => name && name !== 'Unknown')
+  )];
+}
+
+function getImageAttachedContainerNames(image, containers = []) {
   const reference = getImageDisplayName(image);
   const id = String(getImageId(image) || '').replace('sha256:', '');
-  return containers.some((container) => {
+  return getAttachedContainerNames(containers, (container) => {
     const containerImage = String(container.image || '');
     const containerImageId = String(container.image_id || '').replace('sha256:', '');
     return containerImage === reference || (id && id !== 'Unavailable' && containerImageId.startsWith(id));
   });
 }
 
-function isNetworkAttached(name, containers = []) {
-  return containers.some((container) => (container.networks || []).some((network) => network.name === name));
+function getNetworkAttachedContainerNames(name, containers = []) {
+  return getAttachedContainerNames(
+    containers,
+    (container) => (container.networks || []).some((network) => network.name === name)
+  );
 }
 
-function isVolumeAttached(name, containers = []) {
-  return containers.some((container) => (container.mounts || []).some((mount) => mount.type === 'volume' && mount.name === name));
+function getVolumeAttachedContainerNames(name, containers = []) {
+  return getAttachedContainerNames(
+    containers,
+    (container) => (container.mounts || []).some((mount) => mount.type === 'volume' && mount.name === name)
+  );
 }
 
 function MonitoringPanel({
@@ -5930,6 +6037,7 @@ function CreateContainerPanel({
                 type="button"
                 onClick={onCloseVolumeGuiModal}
                 onPointerDown={(event) => event.stopPropagation()}
+                disabled={volumeGuiLoading}
                 aria-label="Close volume files"
               >
                 Close
@@ -6372,7 +6480,12 @@ function VolumePanel({
                             aria-label={`Select ${name}`}
                           />
                         </td>
-                        <td><ResourceAttachmentIndicator attached={isVolumeAttached(name, attachmentContainers)} label={name} /></td>
+                        <td>
+                          <ResourceAttachmentIndicator
+                            containerNames={getVolumeAttachedContainerNames(name, attachmentContainers)}
+                            label={name}
+                          />
+                        </td>
                         <td>{id}</td>
                         <td>{volume.Driver || volume.driver || 'local'}</td>
                       </tr>
@@ -6656,7 +6769,12 @@ function NetworkPanel({
                             />
                           )}
                         </td>
-                        <td><ResourceAttachmentIndicator attached={isNetworkAttached(name, attachmentContainers)} label={name} /></td>
+                        <td>
+                          <ResourceAttachmentIndicator
+                            containerNames={getNetworkAttachedContainerNames(name, attachmentContainers)}
+                            label={name}
+                          />
+                        </td>
                         <td>{id}</td>
                         <td>{network.Driver || network.driver || 'bridge'}</td>
                       </tr>
@@ -7876,7 +7994,12 @@ function BuildImagePanel({
                             aria-label={`Select ${getImageDisplayName(image)}`}
                           />
                         </td>
-                        <td><ResourceAttachmentIndicator attached={isImageAttached(image, attachmentContainers)} label={getImageName(image)} /></td>
+                        <td>
+                          <ResourceAttachmentIndicator
+                            containerNames={getImageAttachedContainerNames(image, attachmentContainers)}
+                            label={getImageName(image)}
+                          />
+                        </td>
                         <td>{id}</td>
                         <td>{getImageTag(image)}</td>
                         <td>{image.Size || image.size || 'Unavailable'}</td>

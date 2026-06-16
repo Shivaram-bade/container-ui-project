@@ -121,6 +121,7 @@ const agentActions = [
 
 const BUILD_JOB_STORAGE_KEY = 'vitel-active-build-job-id';
 const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
+const LOGIN_ENTRANCE_STORAGE_KEY = 'vitel-login-entrance';
 const LOCAL_SERVER_ID = 'local';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
 const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, rbacAction, userProfileAction, ...agentActions];
@@ -326,6 +327,7 @@ const buildVolumeFilePreview = ({ filename, path, size, contentBase64 }) => {
 export default function Home() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [playLoginEntrance, setPlayLoginEntrance] = useState(false);
   const [activeAction, setActiveAction] = useState(() => getActionForPath(location.pathname));
   const [manualMenuOpen, setManualMenuOpen] = useState(false);
   const [rbacMenuOpen, setRbacMenuOpen] = useState(false);
@@ -586,6 +588,31 @@ export default function Home() {
   useEffect(() => {
     setActiveAction(getActionForPath(location.pathname));
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const entranceFlag = sessionStorage.getItem(LOGIN_ENTRANCE_STORAGE_KEY);
+    const isPendingEntrance = entranceFlag === 'pending';
+    const isStrictModeReplay = entranceFlag === 'active' && window.__vitelLoginEntranceActive;
+
+    if (!isPendingEntrance && !isStrictModeReplay) {
+      if (entranceFlag === 'active') sessionStorage.removeItem(LOGIN_ENTRANCE_STORAGE_KEY);
+      return undefined;
+    }
+
+    window.__vitelLoginEntranceActive = true;
+    sessionStorage.setItem(LOGIN_ENTRANCE_STORAGE_KEY, 'active');
+    setPlayLoginEntrance(true);
+
+    const entranceTimer = window.setTimeout(() => {
+      setPlayLoginEntrance(false);
+      window.__vitelLoginEntranceActive = false;
+      sessionStorage.removeItem(LOGIN_ENTRANCE_STORAGE_KEY);
+    }, 1800);
+
+    return () => window.clearTimeout(entranceTimer);
+  }, []);
 
   useEffect(() => {
     authService.getUser()
@@ -3296,7 +3323,7 @@ export default function Home() {
   }, [deploymentJobId, deploymentLoading, selectedDeploymentId]);
 
   return (
-    <div className="home-shell">
+    <div className={`home-shell${playLoginEntrance ? ' login-arrival' : ''}`}>
       <div className="home-atmosphere" aria-hidden="true" />
       <aside className="home-sidebar">
         <div className="home-sidebar-title">

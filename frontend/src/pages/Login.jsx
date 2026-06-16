@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
 import '../styles/Login.css';
 
@@ -304,6 +305,7 @@ function PasswordVisibilityIcon({ visible }) {
 }
 
 export default function Login() {
+  const navigate = useNavigate();
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -366,7 +368,8 @@ export default function Login() {
         localStorage.setItem('user', JSON.stringify(response.data.user));
         setSuccess('Login successful. Redirecting to your dashboard...');
         setTimeout(() => {
-          window.location.href = '/home';
+          sessionStorage.setItem('vitel-login-entrance', 'pending');
+          navigate('/home', { replace: true });
         }, 800);
       } else {
         if (!username || !email || !password || !confirmPassword) {

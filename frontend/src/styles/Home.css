@@ -8962,6 +8962,276 @@ input[type="checkbox"] {
   }
 }
 
+/* One-time post-login Command Center Boot motion. */
+.home-shell.login-arrival {
+  overflow: hidden;
+  animation: login-command-boot-shell 0.78s ease-out both;
+}
+
+.home-shell.login-arrival .home-atmosphere {
+  animation: login-command-boot-atmosphere 1.2s ease-out both;
+}
+
+.home-shell.login-arrival .home-sidebar {
+  animation: login-command-boot-sidebar 0.72s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: center left;
+  will-change: opacity, transform, filter, box-shadow;
+}
+
+.home-shell.login-arrival .home-main {
+  animation: login-command-boot-main 0.9s 0.08s ease-out both;
+  will-change: opacity, filter;
+}
+
+.home-shell.login-arrival .home-header {
+  animation: login-command-boot-header 0.74s 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform;
+}
+
+.home-shell.login-arrival .home-sidebar-title,
+.home-shell.login-arrival .home-nav > *,
+.home-shell.login-arrival .home-logout {
+  animation: login-command-boot-control 0.68s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform, box-shadow;
+}
+
+.home-shell.login-arrival .dashboard-panel {
+  animation: login-command-boot-panel 0.78s 0.28s ease-out both;
+  will-change: opacity, transform, filter;
+}
+
+.home-shell.login-arrival .dashboard-card {
+  animation: login-command-boot-card 0.72s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform, box-shadow, border-color;
+}
+
+.home-shell.login-arrival .home-sidebar-title {
+  animation-delay: 0.14s;
+}
+
+.home-shell.login-arrival .home-nav > :nth-child(1) { animation-delay: 0.22s; }
+.home-shell.login-arrival .home-nav > :nth-child(2) { animation-delay: 0.28s; }
+.home-shell.login-arrival .home-nav > :nth-child(3) { animation-delay: 0.34s; }
+.home-shell.login-arrival .home-nav > :nth-child(4) { animation-delay: 0.4s; }
+.home-shell.login-arrival .home-nav > :nth-child(5) { animation-delay: 0.46s; }
+.home-shell.login-arrival .home-nav > :nth-child(6) { animation-delay: 0.52s; }
+.home-shell.login-arrival .home-nav > :nth-child(7) { animation-delay: 0.58s; }
+.home-shell.login-arrival .home-nav > :nth-child(8) { animation-delay: 0.64s; }
+.home-shell.login-arrival .home-nav > :nth-child(9) { animation-delay: 0.7s; }
+.home-shell.login-arrival .home-nav > :nth-child(10) { animation-delay: 0.76s; }
+.home-shell.login-arrival .home-nav > :nth-child(11) { animation-delay: 0.82s; }
+.home-shell.login-arrival .home-nav > :nth-child(12) { animation-delay: 0.88s; }
+
+.home-shell.login-arrival .home-logout {
+  animation-delay: 0.68s;
+}
+
+.home-shell.login-arrival .dashboard-card:nth-child(1) { animation-delay: 0.4s; }
+.home-shell.login-arrival .dashboard-card:nth-child(2) { animation-delay: 0.46s; }
+.home-shell.login-arrival .dashboard-card:nth-child(3) { animation-delay: 0.52s; }
+.home-shell.login-arrival .dashboard-card:nth-child(4) { animation-delay: 0.58s; }
+.home-shell.login-arrival .dashboard-card:nth-child(5) { animation-delay: 0.64s; }
+.home-shell.login-arrival .dashboard-card:nth-child(6) { animation-delay: 0.7s; }
+.home-shell.login-arrival .dashboard-card:nth-child(7) { animation-delay: 0.76s; }
+.home-shell.login-arrival .dashboard-card:nth-child(8) { animation-delay: 0.82s; }
+.home-shell.login-arrival .dashboard-card:nth-child(9) { animation-delay: 0.88s; }
+.home-shell.login-arrival .dashboard-card:nth-child(10) { animation-delay: 0.94s; }
+
+@keyframes login-command-boot-shell {
+  0% {
+    opacity: 0;
+    filter: brightness(0.76) saturate(0.72);
+  }
+  56% {
+    opacity: 1;
+    filter: brightness(1.08) saturate(1.12);
+  }
+  100% {
+    opacity: 1;
+    filter: brightness(1) saturate(1);
+  }
+}
+
+@keyframes login-command-boot-atmosphere {
+  0% {
+    opacity: 0;
+    transform: scale(1.015);
+  }
+  34% {
+    opacity: 0.35;
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes login-command-boot-sidebar {
+  0% {
+    opacity: 0;
+    transform: translateX(-14px) scaleX(0.985);
+    filter: blur(8px) brightness(0.82);
+    box-shadow: 0 0 0 rgba(84, 225, 211, 0);
+  }
+  58% {
+    opacity: 1;
+    transform: translateX(0) scaleX(1);
+    filter: blur(0) brightness(1.1);
+    box-shadow: 20px 0 62px rgba(84, 225, 211, 0.18), 18px 0 54px rgba(2, 8, 23, 0.38);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scaleX(1);
+    filter: blur(0) brightness(1);
+  }
+}
+
+@keyframes login-command-boot-main {
+  0% {
+    opacity: 0;
+    filter: blur(10px) brightness(0.82);
+  }
+  52% {
+    opacity: 1;
+    filter: blur(0) brightness(1.08);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0) brightness(1);
+  }
+}
+
+@keyframes login-command-boot-header {
+  0% {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  68% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes login-command-boot-control {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.98);
+    box-shadow: 0 0 0 rgba(84, 225, 211, 0);
+  }
+  62% {
+    opacity: 1;
+    transform: translateX(0) scale(1.015);
+    box-shadow: inset 3px 0 0 rgba(84, 225, 211, 0.72), 0 0 22px rgba(84, 225, 211, 0.12);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    box-shadow: none;
+  }
+}
+
+@keyframes login-command-boot-panel {
+  0% {
+    opacity: 0;
+    transform: translateY(16px);
+    filter: blur(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes login-command-boot-card {
+  0% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+    border-color: rgba(84, 225, 211, 0.12);
+    box-shadow: 0 0 0 rgba(84, 225, 211, 0);
+  }
+  58% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.012);
+    border-color: rgba(84, 225, 211, 0.44);
+    box-shadow: 0 0 28px rgba(84, 225, 211, 0.12), 0 18px 44px rgba(2, 8, 23, 0.2);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 920px) {
+  .home-shell.login-arrival .home-sidebar {
+    animation-name: login-command-boot-sidebar-mobile;
+    transform-origin: top center;
+  }
+
+  .home-shell.login-arrival .home-header {
+    animation-name: login-command-boot-header-mobile;
+  }
+}
+
+@keyframes login-command-boot-sidebar-mobile {
+  0% {
+    opacity: 0;
+    transform: translateY(-16px);
+    filter: blur(8px) brightness(0.82);
+  }
+  58% {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0) brightness(1.1);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes login-command-boot-header-mobile {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  68% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-shell.login-arrival,
+  .home-shell.login-arrival .home-atmosphere,
+  .home-shell.login-arrival .home-sidebar,
+  .home-shell.login-arrival .home-main,
+  .home-shell.login-arrival .home-header,
+  .home-shell.login-arrival .home-sidebar-title,
+  .home-shell.login-arrival .home-nav > *,
+  .home-shell.login-arrival .home-logout,
+  .home-shell.login-arrival .dashboard-panel,
+  .home-shell.login-arrival .dashboard-card {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+  }
+}
+
 /* Keep dropdown text explicit and refresh actions aligned across every panel. */
 .home-main select {
   text-overflow: ellipsis;

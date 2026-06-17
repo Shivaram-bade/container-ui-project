@@ -6,4 +6,3 @@ frontend/dist/
 backend/venv/
 **/__pycache__/
 *.py[cod]
-test

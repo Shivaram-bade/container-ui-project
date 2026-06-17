@@ -668,12 +668,12 @@
   white-space: nowrap;
   cursor: pointer;
   box-shadow: 0 10px 22px rgba(15, 118, 110, 0.18);
-  width: 90%;
-  height: 40%;
+  width: auto;
+  height: auto;
   font-size: 80%;
-  position: relative;
-  top: 25px;
-  right: 290px;
+  position: absolute;
+  top: 165px;
+  left: 516px;
 }
 
 .dashboard-cli-button span {

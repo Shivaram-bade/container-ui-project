@@ -7764,13 +7764,127 @@ input[type="checkbox"] {
   color: #f6b94a;
 }
 
+.agent-install-confirm-modal {
+  width: min(560px, calc(100vw - 32px)) !important;
+}
+
+.agent-install-confirm-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.agent-install-confirm-heading > div {
+  min-width: 0;
+}
+
+.agent-install-confirm-heading span:not(.agent-install-confirm-icon) {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.agent-install-confirm-heading h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-install-confirm-icon {
+  display: grid;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 17px;
+  font-weight: 950;
+}
+
+.agent-install-confirm-modal.danger .agent-install-confirm-heading span:not(.agent-install-confirm-icon) {
+  color: #fb7777;
+}
+
+.agent-install-confirm-modal.danger .agent-install-confirm-icon {
+  border: 1px solid rgba(239, 68, 68, 0.42);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fb7777;
+}
+
+.agent-install-confirm-modal.success .agent-install-confirm-heading span:not(.agent-install-confirm-icon) {
+  color: #67e8a1;
+}
+
+.agent-install-confirm-modal.success .agent-install-confirm-icon {
+  border: 1px solid rgba(34, 197, 94, 0.42);
+  background: rgba(34, 197, 94, 0.12);
+  color: #67e8a1;
+  font-size: 13px;
+}
+
+.agent-install-confirm-detail {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 18px 0;
+  border: 1px solid var(--cmd-line, rgba(148, 163, 184, 0.22));
+  border-radius: 10px;
+  padding: 14px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.agent-install-confirm-detail span {
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--cmd-muted, #64748b);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-install-confirm-detail strong {
+  min-width: 0;
+  color: var(--cmd-text, #0f172a);
+  overflow-wrap: anywhere;
+}
+
+.agent-install-confirm-detail small {
+  color: var(--cmd-muted, #64748b);
+  font-weight: 700;
+}
+
+.agent-install-confirm-note {
+  margin: 0 0 20px !important;
+  border-radius: 10px;
+  padding: 13px 14px;
+  color: var(--cmd-text, #334155);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.agent-install-confirm-modal.danger .agent-install-confirm-note {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.09);
+}
+
+.agent-install-confirm-modal.success .agent-install-confirm-note {
+  border: 1px solid rgba(34, 197, 94, 0.32);
+  background: rgba(34, 197, 94, 0.1);
+}
+
 @media (max-width: 520px) {
-  .agent-remove-confirm-modal .resource-modal-actions {
+  .agent-remove-confirm-modal .resource-modal-actions,
+  .agent-install-confirm-modal .resource-modal-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .agent-remove-confirm-modal .resource-modal-actions button {
+  .agent-remove-confirm-modal .resource-modal-actions button,
+  .agent-install-confirm-modal .resource-modal-actions button {
     width: 100% !important;
   }
 }

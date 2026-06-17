@@ -122,6 +122,8 @@ const agentActions = [
 const BUILD_JOB_STORAGE_KEY = 'vitel-active-build-job-id';
 const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
 const LOGIN_ENTRANCE_STORAGE_KEY = 'vitel-login-entrance';
+const AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json';
+const AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json';
 const LOCAL_SERVER_ID = 'local';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
 const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, rbacAction, userProfileAction, ...agentActions];
@@ -502,6 +504,7 @@ export default function Home() {
   const [agentName, setAgentName] = useState('');
   const [agentServerIp, setAgentServerIp] = useState('');
   const [agentPort, setAgentPort] = useState('19541');
+  const [agentInstallMode, setAgentInstallMode] = useState(AGENT_INSTALL_WITHOUT_DAEMON_JSON);
   const [agentTab, setAgentTab] = useState('create');
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [selectedDeletedAgentId, setSelectedDeletedAgentId] = useState('');
@@ -871,7 +874,7 @@ export default function Home() {
   }, [agentMessage]);
 
   const handleCreateAgent = async (event) => {
-    event.preventDefault();
+    event?.preventDefault();
     setAgentLoading(true);
     setAgentMessage('');
     setAgentCreateOutput('Creating Docker agent install command...\n');
@@ -882,6 +885,7 @@ export default function Home() {
         name: agentName,
         server_ip: agentServerIp,
         install_method: 'docker',
+        daemon_json_mode: agentInstallMode,
         port: agentPort,
         browser_hostname: window.location.hostname,
       });
@@ -889,7 +893,6 @@ export default function Home() {
         ? 'Agent install steps created. Run them on the target server.'
         : 'Agent created and started in the background.';
       const outputLines = [
-        response.data.command ? `$ ${response.data.command}` : '',
         response.data.output || '',
         response.data.success ? successMessage : '',
       ].filter(Boolean);
@@ -898,6 +901,7 @@ export default function Home() {
       setAgentName('');
       setAgentServerIp('');
       setAgentPort('19541');
+      setAgentInstallMode(AGENT_INSTALL_WITHOUT_DAEMON_JSON);
       loadAgents();
     } catch (error) {
       const data = error.response?.data;
@@ -3618,6 +3622,7 @@ export default function Home() {
             agentName={agentName}
             agentServerIp={agentServerIp}
             agentPort={agentPort}
+            agentInstallMode={agentInstallMode}
             agentTab={agentTab}
             agentLoading={agentLoading}
             agentDeleteLoading={agentDeleteLoading}
@@ -3638,6 +3643,7 @@ export default function Home() {
             onAgentNameChange={setAgentName}
             onAgentServerIpChange={setAgentServerIp}
             onAgentPortChange={setAgentPort}
+            onAgentInstallModeChange={setAgentInstallMode}
             onAgentTabChange={setAgentTab}
             onSelectedAgentChange={setSelectedAgentId}
             onSelectedDeletedAgentChange={setSelectedDeletedAgentId}
@@ -8266,6 +8272,7 @@ function AgentPanel({
   agentName,
   agentServerIp,
   agentPort,
+  agentInstallMode,
   agentTab,
   agentLoading,
   agentDeleteLoading,
@@ -8286,6 +8293,7 @@ function AgentPanel({
   onAgentNameChange,
   onAgentServerIpChange,
   onAgentPortChange,
+  onAgentInstallModeChange,
   onAgentTabChange,
   onSelectedAgentChange,
   onSelectedDeletedAgentChange,
@@ -8308,14 +8316,23 @@ function AgentPanel({
   const deletableAgents = agents.filter((agent) => agent.id !== 'local' && !agent.is_deleted);
   const restorableAgents = (deletedAgents || []).filter((agent) => agent.id !== 'local' && agent.is_deleted);
   const [agentOutputCopyMessage, setAgentOutputCopyMessage] = useState('');
+  const [pendingCreateMode, setPendingCreateMode] = useState('');
   const [pendingRemoveAgentId, setPendingRemoveAgentId] = useState('');
   const [removeAgentAttempted, setRemoveAgentAttempted] = useState(false);
   const pendingRemoveAgent = restorableAgents.find(
     (agent) => String(agent.id) === String(pendingRemoveAgentId)
   );
+  const pendingCreateUsesDaemon = pendingCreateMode === AGENT_INSTALL_WITH_DAEMON_JSON;
+  const registryHostHint = `${window.location.hostname || 'application-host'}:5000`;
 
   const getAgentSetupCommandText = (value) => {
     const lines = String(value || '').replace(/\r\n/g, '\n').split('\n');
+    const scriptStartIndex = lines.findIndex((line) => line.trim() === '# Vitel agent install script starts');
+    const scriptEndIndex = lines.findIndex((line) => line.trim() === '# Vitel agent install script ends');
+    if (scriptStartIndex !== -1 && scriptEndIndex !== -1 && scriptEndIndex >= scriptStartIndex) {
+      return lines.slice(scriptStartIndex, scriptEndIndex + 1).join('\n').trim();
+    }
+
     const startIndex = lines.findIndex((line) => line.trim() === 'docker run -d \\');
     if (startIndex === -1) {
       return String(value || '').trim();
@@ -8356,6 +8373,16 @@ function AgentPanel({
       setAgentOutputCopyMessage('failed');
       window.setTimeout(() => setAgentOutputCopyMessage(''), 2000);
     }
+  };
+
+  const handleCreateAgentSubmit = (event) => {
+    event.preventDefault();
+    setPendingCreateMode(agentInstallMode || AGENT_INSTALL_WITHOUT_DAEMON_JSON);
+  };
+
+  const handleConfirmCreateAgent = async () => {
+    setPendingCreateMode('');
+    await onCreateAgent();
   };
 
   const handleConfirmRemoveAgent = async () => {
@@ -8408,7 +8435,7 @@ function AgentPanel({
           </div>
 
           {effectiveAgentTab === 'create' ? (
-            <form className="agent-form" onSubmit={onCreateAgent} autoComplete="off">
+            <form className="agent-form" onSubmit={handleCreateAgentSubmit} autoComplete="off">
               <div className="agent-form-grid">
                 <label>
                   <span>Display name</span>
@@ -8446,6 +8473,18 @@ function AgentPanel({
                     autoComplete="off"
                     disabled={agentLoading}
                   />
+                </label>
+                <label>
+                  <span>Registry setup</span>
+                  <select
+                    name="agent-daemon-json-mode"
+                    value={agentInstallMode}
+                    onChange={(event) => onAgentInstallModeChange(event.target.value)}
+                    disabled={agentLoading}
+                  >
+                    <option value={AGENT_INSTALL_WITHOUT_DAEMON_JSON}>Without Update daemon.json</option>
+                    <option value={AGENT_INSTALL_WITH_DAEMON_JSON}>With Update daemon.json</option>
+                  </select>
                 </label>
               </div>
 
@@ -8557,6 +8596,69 @@ function AgentPanel({
                 </button>
               </div>
             </div>
+          )}
+
+          {pendingCreateMode && (
+            <OutputPortal>
+              <div className="output-modal-backdrop" role="presentation">
+                <div
+                  className={`resource-delete-modal agent-install-confirm-modal ${pendingCreateUsesDaemon ? 'danger' : 'success'}`}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="agent-install-confirm-title"
+                  aria-describedby="agent-install-confirm-description"
+                >
+                  <div className="agent-install-confirm-heading">
+                    <span className="agent-install-confirm-icon" aria-hidden="true">
+                      {pendingCreateUsesDaemon ? '!' : 'OK'}
+                    </span>
+                    <div>
+                      <span>{pendingCreateUsesDaemon ? 'Docker daemon update' : 'Direct agent command'}</span>
+                      <h3 id="agent-install-confirm-title">
+                        {pendingCreateUsesDaemon ? 'Update daemon.json before install?' : 'Create direct install command?'}
+                      </h3>
+                    </div>
+                  </div>
+
+                  <p id="agent-install-confirm-description">
+                    {pendingCreateUsesDaemon
+                      ? `The generated script will check /etc/docker/daemon.json, add ${registryHostHint} only if missing, run systemctl daemon-reload, restart Docker, wait for Docker to become healthy, then start the agent container.`
+                      : `The generated command will directly start the agent container. Before running it on your server, make sure daemon.json already includes ${registryHostHint} in insecure-registries.`}
+                  </p>
+
+                  <div className="agent-install-confirm-detail">
+                    <span>Target</span>
+                    <strong>{agentName.trim() || 'New agent'}</strong>
+                    <small>{agentServerIp.trim() || 'Server address'}:{agentPort || 19541}</small>
+                  </div>
+
+                  <p className="agent-install-confirm-note">
+                    {pendingCreateUsesDaemon
+                      ? 'The script does not delete images, volumes, or networks. If it changes daemon.json and a later step fails, it restores the previous daemon.json and attempts to restart containers that were running before the script began.'
+                      : 'Use this option only when the target Docker daemon already trusts the registry shown in the generated command.'}
+                  </p>
+
+                  <div className="resource-modal-actions">
+                    <button
+                      type="button"
+                      className={pendingCreateUsesDaemon ? 'home-danger-button' : 'home-primary-button'}
+                      onClick={handleConfirmCreateAgent}
+                      disabled={agentLoading}
+                    >
+                      {agentLoading ? 'Creating command...' : 'Confirm'}
+                    </button>
+                    <button
+                      type="button"
+                      className="home-secondary-button"
+                      onClick={() => setPendingCreateMode('')}
+                      disabled={agentLoading}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </OutputPortal>
           )}
 
           {pendingRemoveAgent && (

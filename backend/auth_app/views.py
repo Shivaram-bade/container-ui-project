@@ -206,7 +206,7 @@ DOCKER_BUILDX_CONFIG = Path('/tmp/vitel-docker-buildx')
 AGENT_DOCKER_NETWORK = 'agent_nt'
 AGENT_DOCKER_VOLUME = 'agent_vol'
 LOCAL_AGENT_IMAGE = 'agent:latest'
-REMOTE_AGENT_CONTAINER_NAME = os.getenv('VITEL_AGENT_CONTAINER_NAME', 'docker-control-agent')
+REMOTE_AGENT_CONTAINER_NAME = os.getenv('VITEL_AGENT_CONTAINER_NAME', 'docker-agent')
 LEGACY_REMOTE_AGENT_CONTAINER_NAME = 'vitel-agent'
 REMOTE_AGENT_IMAGE = os.getenv('VITEL_AGENT_IMAGE', 'yourrepo/vitel-agent:latest')
 AGENT_IMAGE_SOURCE = os.getenv('VITEL_AGENT_SOURCE_IMAGE', 'container-ui-project-backend:latest')
@@ -2308,7 +2308,17 @@ def build_docker_agent_token(agent):
     return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
 
 
-def build_manual_agent_install_command(agent, password, request):
+AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json'
+AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json'
+AGENT_INSTALL_MODES = {AGENT_INSTALL_WITH_DAEMON_JSON, AGENT_INSTALL_WITHOUT_DAEMON_JSON}
+
+
+def get_requested_agent_install_mode(request):
+    install_mode = str(request.data.get('daemon_json_mode') or AGENT_INSTALL_WITHOUT_DAEMON_JSON).strip()
+    return install_mode if install_mode in AGENT_INSTALL_MODES else AGENT_INSTALL_WITHOUT_DAEMON_JSON
+
+
+def build_manual_agent_docker_run_command(agent, password, request):
     port = int(agent.port)
     container_name = REMOTE_AGENT_CONTAINER_NAME
     pull_reference = get_agent_registry_pull_reference(request)
@@ -2316,8 +2326,6 @@ def build_manual_agent_install_command(agent, password, request):
     control_ws_url = get_agent_control_server_ws_url(request)
     agent_token = password or build_docker_agent_token(agent)
     return "\n".join([
-        'docker pull ' + shlex.quote(pull_reference),
-        'docker rm -f ' + shlex.quote(container_name) + ' >/dev/null 2>&1 || true',
         'docker run -d \\',
         '  --name ' + shlex.quote(container_name) + ' \\',
         '  --restart unless-stopped \\',
@@ -2339,12 +2347,164 @@ def build_manual_agent_install_command(agent, password, request):
         '  ' + shlex.quote(pull_reference),
     ])
 
-def build_manual_agent_install_output(agent, password, request):
+
+def get_agent_registry_insecure_host(request):
+    return get_agent_registry_pull_reference(request).split('/', 1)[0]
+
+
+def build_manual_agent_daemon_install_command(agent, password, request):
+    registry_host = get_agent_registry_insecure_host(request)
+    docker_run_command = build_manual_agent_docker_run_command(agent, password, request)
+    return "\n".join([
+        '# Vitel agent install script starts',
+        'set -eu',
+        '',
+        'REGISTRY_HOST=' + build_shell_single_quoted(registry_host),
+        'DAEMON_FILE=/etc/docker/daemon.json',
+        'BACKUP_FILE=',
+        'DAEMON_CHANGED=0',
+        'CREATED_DAEMON_FILE=0',
+        'RUNNING_CONTAINERS="$(docker ps -q 2>/dev/null || true)"',
+        '',
+        'rollback_agent_setup() {',
+        '  status="$1"',
+        '  if [ "$status" -eq 0 ]; then return 0; fi',
+        '  echo "Agent setup failed. Rolling back daemon.json changes made by this script." >&2',
+        '  if [ "$DAEMON_CHANGED" = "1" ]; then',
+        '    if [ -n "$BACKUP_FILE" ] && [ -f "$BACKUP_FILE" ]; then',
+        '      cp "$BACKUP_FILE" "$DAEMON_FILE"',
+        '    elif [ "$CREATED_DAEMON_FILE" = "1" ]; then',
+        '      rm -f "$DAEMON_FILE"',
+        '    fi',
+        '    systemctl daemon-reload >/dev/null 2>&1 || true',
+        '    systemctl restart docker >/dev/null 2>&1 || true',
+        '    for container_id in $RUNNING_CONTAINERS; do',
+        '      docker start "$container_id" >/dev/null 2>&1 || true',
+        '    done',
+        '  fi',
+        '}',
+        '',
+        'finish_agent_setup() {',
+        '  status="$?"',
+        '  rollback_agent_setup "$status"',
+        '  exit "$status"',
+        '}',
+        'trap finish_agent_setup EXIT',
+        '',
+        'if [ "$(id -u)" -ne 0 ]; then',
+        '  echo "Run this script as root because it may update /etc/docker/daemon.json and restart Docker." >&2',
+        '  exit 1',
+        'fi',
+        'command -v docker >/dev/null 2>&1 || { echo "docker command was not found." >&2; exit 1; }',
+        'command -v systemctl >/dev/null 2>&1 || { echo "systemctl command was not found." >&2; exit 1; }',
+        'PYTHON_BIN="$(command -v python3 || command -v python || true)"',
+        'if [ -z "$PYTHON_BIN" ]; then',
+        '  echo "python3 or python is required to safely merge daemon.json." >&2',
+        '  exit 1',
+        'fi',
+        '',
+        'NEEDS_DAEMON_UPDATE="$("$PYTHON_BIN" - "$DAEMON_FILE" "$REGISTRY_HOST" <<\'PY\'',
+        'import json, os, sys',
+        'path, registry = sys.argv[1], sys.argv[2]',
+        'if not os.path.exists(path) or os.path.getsize(path) == 0:',
+        '    print("yes")',
+        '    raise SystemExit(0)',
+        'with open(path, "r", encoding="utf-8") as handle:',
+        '    data = json.load(handle)',
+        'if not isinstance(data, dict):',
+        '    raise SystemExit("daemon.json must contain a JSON object.")',
+        'registries = data.get("insecure-registries", [])',
+        'if not isinstance(registries, list):',
+        '    raise SystemExit("daemon.json insecure-registries must be a list.")',
+        'print("no" if registry in registries else "yes")',
+        'PY',
+        ')"',
+        '',
+        'if [ "$NEEDS_DAEMON_UPDATE" = "yes" ]; then',
+        '  mkdir -p /etc/docker',
+        '  if [ -f "$DAEMON_FILE" ]; then',
+        '    BACKUP_FILE="$DAEMON_FILE.vitel-backup-$(date +%Y%m%d%H%M%S)"',
+        '    cp -p "$DAEMON_FILE" "$BACKUP_FILE"',
+        '    echo "Backed up existing daemon.json to $BACKUP_FILE"',
+        '  else',
+        '    CREATED_DAEMON_FILE=1',
+        '    printf "{}\\n" > "$DAEMON_FILE"',
+        '  fi',
+        '  "$PYTHON_BIN" - "$DAEMON_FILE" "$REGISTRY_HOST" <<\'PY\'',
+        'import json, sys',
+        'path, registry = sys.argv[1], sys.argv[2]',
+        'with open(path, "r", encoding="utf-8") as handle:',
+        '    content = handle.read().strip()',
+        'data = json.loads(content) if content else {}',
+        'if not isinstance(data, dict):',
+        '    raise SystemExit("daemon.json must contain a JSON object.")',
+        'registries = data.get("insecure-registries", [])',
+        'if not isinstance(registries, list):',
+        '    raise SystemExit("daemon.json insecure-registries must be a list.")',
+        'if registry not in registries:',
+        '    registries.append(registry)',
+        'data["insecure-registries"] = registries',
+        'with open(path, "w", encoding="utf-8") as handle:',
+        '    json.dump(data, handle, indent=2)',
+        '    handle.write("\\n")',
+        'PY',
+        '  DAEMON_CHANGED=1',
+        '  echo "Added $REGISTRY_HOST to daemon.json insecure-registries."',
+        '  systemctl daemon-reload',
+        '  systemctl restart docker',
+        '  DOCKER_READY=0',
+        '  for attempt in $(seq 1 30); do',
+        '    if docker info >/dev/null 2>&1; then',
+        '      DOCKER_READY=1',
+        '      break',
+        '    fi',
+        '    sleep 2',
+        '  done',
+        '  if [ "$DOCKER_READY" != "1" ]; then',
+        '    echo "Docker did not become healthy after restart." >&2',
+        '    exit 1',
+        '  fi',
+        '  for container_id in $RUNNING_CONTAINERS; do',
+        '    if ! docker ps -q --no-trunc | grep -q "^$container_id"; then',
+        '      docker start "$container_id" >/dev/null 2>&1 || true',
+        '    fi',
+        '  done',
+        'else',
+        '  echo "$REGISTRY_HOST already exists in daemon.json insecure-registries. Docker restart skipped."',
+        'fi',
+        '',
+        docker_run_command,
+        '',
+        'trap - EXIT',
+        'echo "Agent container start command completed."',
+        '# Vitel agent install script ends',
+    ])
+
+
+def build_manual_agent_install_command(agent, password, request, install_mode=AGENT_INSTALL_WITHOUT_DAEMON_JSON):
+    if install_mode == AGENT_INSTALL_WITH_DAEMON_JSON:
+        return build_manual_agent_daemon_install_command(agent, password, request)
+    return build_manual_agent_docker_run_command(agent, password, request)
+
+
+def build_manual_agent_install_output(agent, password, request, install_mode=AGENT_INSTALL_WITHOUT_DAEMON_JSON):
+    registry_host = get_agent_registry_insecure_host(request)
+    if install_mode == AGENT_INSTALL_WITH_DAEMON_JSON:
+        intro = [
+            'Run this script on the target server as root. It checks /etc/docker/daemon.json, adds the controller registry only if missing, reloads systemd, restarts Docker, waits for Docker health, then starts the agent container.',
+            'If the script changes daemon.json and a later step fails, it restores the previous daemon.json and attempts to restart containers that were running before the script began.',
+        ]
+    else:
+        intro = [
+            'Run this command on the target server to start the agent container.',
+            f'Before running it, make sure /etc/docker/daemon.json already contains "{registry_host}" in insecure-registries so Docker can pull from this controller registry.',
+        ]
+
     return "\n".join([
         f'Agent record created for {agent.name} ({agent.server_ip}:{agent.port}).',
-        'Run these commands on the target server to pull the agent image from this controller registry and start it:',
+        *intro,
         '',
-        build_manual_agent_install_command(agent, password, request),
+        build_manual_agent_install_command(agent, password, request, install_mode),
         '',
         f'The agent container uses host networking and AGENT_PORT={agent.port}.',
         'Make sure the control server URLs in the command are reachable from the target server.',
@@ -4288,6 +4448,7 @@ def agents(request):
         port = int(request.data.get('port') or 19541)
     except (TypeError, ValueError):
         port = 19541
+    install_mode = get_requested_agent_install_mode(request)
 
     if not name or not server_ip:
         return Response({
@@ -4356,14 +4517,12 @@ def agents(request):
             'error': image_result.get('error') or 'Unable to publish the agent image to the local registry.',
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    output = '\n'.join([
-        image_result.get('output', ''),
-        build_manual_agent_install_output(agent, agent_secret, request),
-    ]).strip()
+    output = build_manual_agent_install_output(agent, agent_secret, request, install_mode)
     return Response({
         'success': True,
         'created': created,
         'manual_install': True,
+        'daemon_json_mode': install_mode,
         'agent': AgentSerializer(agent).data,
         'command': 'docker control agent install',
         'output': output,

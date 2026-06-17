@@ -10,7 +10,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 
-AGENT_ID = os.environ.get('AGENT_ID', 'docker-control-agent')
+AGENT_ID = os.environ.get('AGENT_ID', 'docker-agent')
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
 AGENT_PORT = int(os.environ.get('AGENT_PORT') or 19541)
 CONTROL_SERVER_URL = os.environ.get('CONTROL_SERVER_URL', '').rstrip('/')

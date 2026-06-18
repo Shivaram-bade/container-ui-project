@@ -65,7 +65,7 @@ services:
     
   frontend:
     build:
-      context: ./frontend
+      context: ./frontends
       dockerfile: Dockerfile
     container_name: vitel-frontend
     restart: always

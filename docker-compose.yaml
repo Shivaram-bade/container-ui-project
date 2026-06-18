@@ -72,7 +72,7 @@ services:
     ports:
       - "${VITEL_FRONTEND_PORT:-3000}:3000"
     environment:
-      VITE_API_PROXY_TARGET: http://backend:8002
+      VITE_API_PROXY_TARGET: http://backend:8000
     depends_on:
       backend:
         condition: service_healthy

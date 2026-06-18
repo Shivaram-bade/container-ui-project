@@ -28,6 +28,7 @@ urlpatterns = [
     path('shell-command/', views.shell_command, name='shell_command'),
     path('shell-output/', views.shell_output, name='shell_output'),
     path('shell-session/', views.shell_session, name='shell_session'),
+    path('terminal-autocomplete/', views.terminal_autocomplete, name='terminal_autocomplete'),
     path('agent-terminal/', views.agent_terminal, name='agent_terminal'),
     path('browse-dockerfiles/', views.browse_dockerfiles, name='browse_dockerfiles'),
     path('browse-compose-files/', views.browse_compose_files, name='browse_compose_files'),

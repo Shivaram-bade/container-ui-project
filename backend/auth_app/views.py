@@ -3067,6 +3067,141 @@ def shell_session_is_owned_by_user(session, user):
     return owner_id is None or (user and getattr(user, 'id', None) == owner_id)
 
 
+TERMINAL_COMPLETION_SCRIPT = r'''
+prefix="$1"
+mode="$2"
+requested_cwd="$3"
+cd -- "$requested_cwd" 2>/dev/null || cd /
+
+if [ "$mode" = "command" ]; then
+  old_ifs="$IFS"
+  IFS=:
+  for path_dir in $PATH; do
+    [ -d "$path_dir" ] || continue
+    for candidate in "$path_dir"/"$prefix"*; do
+      [ -f "$candidate" ] && [ -x "$candidate" ] && basename "$candidate"
+    done
+  done
+  IFS="$old_ifs"
+  for builtin_name in cd echo exit export help history jobs kill logout printf pwd read set source test type ulimit umask unset wait; do
+    case "$builtin_name" in "$prefix"*) printf '%s\n' "$builtin_name";; esac
+  done
+  exit 0
+fi
+
+case "$prefix" in
+  */*) directory_part="${prefix%/*}"; base_part="${prefix##*/}"; [ -n "$directory_part" ] || directory_part="/";;
+  *) directory_part="."; base_part="$prefix";;
+esac
+
+for candidate in "$directory_part"/"$base_part"*; do
+  [ -e "$candidate" ] || continue
+  if [ "$directory_part" = "." ]; then
+    display_name="${candidate#./}"
+  elif [ "$directory_part" = "/" ]; then
+    display_name="/${candidate##*/}"
+  else
+    display_name="${directory_part%/}/${candidate##*/}"
+  fi
+  [ -d "$candidate" ] && display_name="${display_name}/"
+  printf '%s\n' "$display_name"
+done
+'''
+
+
+def parse_terminal_completion_input(input_text):
+    text = str(input_text or '')
+    token_match = re.search(r'(^|[\s;&|])([^\s;&|]*)$', text)
+    token = token_match.group(2) if token_match else ''
+    token_start = token_match.start(2) if token_match else len(text)
+    before_token = text[:token_start]
+    mode = 'command' if not before_token.strip() or re.search(r'(?:^|[;&|])\s*$', before_token) else 'path'
+    return text, token, token_start, mode
+
+
+def format_terminal_completions(input_text, token, token_start, mode, output):
+    matches = sorted(set(line.strip() for line in str(output or '').splitlines() if line.strip()))[:200]
+    if not matches:
+        return {'input': input_text, 'matches': [], 'completed': False}
+
+    common_prefix = os.path.commonprefix(matches)
+    replacement = common_prefix if len(common_prefix) > len(token) else token
+    if len(matches) == 1:
+        replacement = matches[0]
+        if not replacement.endswith('/'):
+            replacement += ' '
+
+    return {
+        'input': input_text[:token_start] + replacement,
+        'matches': matches,
+        'completed': replacement != token,
+        'mode': mode,
+    }
+
+
+def run_terminal_completion_command(command, cwd='/', agent=None, password='', remote_agent=False):
+    if remote_agent:
+        return run_target_docker_command(agent, password, True, command, timeout=30)
+    if command and command[0] == 'docker':
+        return run_docker_command(command, timeout=30)
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return {
+            'success': process.returncode == 0,
+            'return_code': process.returncode,
+            'output': ((process.stdout or '') + ('\n' if process.stdout and process.stderr else '') + (process.stderr or '')).strip(),
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {'success': False, 'return_code': None, 'output': str(exc)}
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def terminal_autocomplete(request):
+    """Return command or path completions for a server, container, or volume terminal."""
+    input_text, token, token_start, mode = parse_terminal_completion_input(request.data.get('input'))
+    session_id = str(request.data.get('session_id') or '').strip()
+    cwd = str(request.data.get('cwd') or '/').strip() or '/'
+
+    if session_id:
+        with CONTAINER_SHELLS_LOCK:
+            session = CONTAINER_SHELLS.get(session_id)
+            if not session or not shell_session_is_owned_by_user(session, request.user) or session.get('closed'):
+                return Response({'error': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
+            container_id = session.get('temporary_container') or session.get('container_id')
+            session_cwd = session.get('terminal_path') or cwd
+            agent = session.get('agent')
+            password = session.get('password', '')
+            remote_agent = bool(session.get('remote_volume'))
+
+        command = [
+            'docker', 'exec',
+            container_id, 'sh', '-lc', TERMINAL_COMPLETION_SCRIPT,
+            'vitel-complete', token, mode, session_cwd,
+        ]
+        result = run_terminal_completion_command(command, session_cwd, agent, password, remote_agent)
+    else:
+        if not user_has_operation(request.user, 'manage_agents'):
+            return Response({'error': 'You do not have permission to use server terminal completion.'}, status=status.HTTP_403_FORBIDDEN)
+        agent, password, remote_agent, error_response = get_docker_target_context(request)
+        if error_response:
+            return error_response
+        command = ['sh', '-lc', TERMINAL_COMPLETION_SCRIPT, 'vitel-complete', token, mode, cwd]
+        result = run_terminal_completion_command(command, cwd, agent, password, remote_agent)
+
+    if not result.get('success'):
+        return Response({
+            'error': result.get('output') or 'Unable to calculate terminal completions.',
+        }, status=status.HTTP_400_BAD_REQUEST)
+    return Response(format_terminal_completions(input_text, token, token_start, mode, result.get('output')))
+
+
 def send_shell_command(session_id, command, user=None):
     """Send a command to the container shell."""
     with CONTAINER_SHELLS_LOCK:

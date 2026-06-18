@@ -6252,6 +6252,14 @@ input[type="checkbox"] {
   color: #dffcff !important;
 }
 
+.terminal-banner span {
+  float: right;
+  color: #54e1d3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  text-transform: none;
+}
+
 .terminal-input {
   background: transparent !important;
   color: #eaffff !important;

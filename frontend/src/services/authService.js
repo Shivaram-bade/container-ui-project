@@ -289,6 +289,15 @@ export const authService = {
     });
   },
 
+  autocompleteTerminal: ({ sessionId, serverId, input, cwd }) => {
+    return api.post('/api/auth/terminal-autocomplete/', {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(serverId ? { server_id: serverId } : {}),
+      input: input || '',
+      cwd: cwd || '/',
+    });
+  },
+
   runAgentTerminalCommand: (serverId, command, cwd) => {
     return api.post('/api/auth/agent-terminal/', {
       server_id: serverId || 'local',

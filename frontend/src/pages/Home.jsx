@@ -1980,7 +1980,7 @@ export default function Home() {
     } : selectedContainer;
     if (!targetContainer) return;
     const selectedContainerId = getContainerId(targetContainer);
-    const selectedContainerName = getContainerName(targetContainer);
+    const selectedContainerName = getTerminalName(getContainerName(targetContainer), 'container');
 
     if (!selectedContainerId) {
       setConnectMessage('Container ID is missing.');
@@ -1990,6 +1990,7 @@ export default function Home() {
     setConnectLoading(true);
     setConnectTarget({ type: 'container', key: selectedContainerId });
     setConnectMessage('');
+    setShellInput('');
     await closeActiveShellSession();
     setActiveShellContainer(null);
     setShellOutput('');
@@ -2004,8 +2005,8 @@ export default function Home() {
         setShellOutput(data.output);
         setActiveShellContainer({
           id: data.container_id || selectedContainerId,
-          name: data.container_name || selectedContainerName,
-          prompt: data.terminal_prompt || '',
+          name: getTerminalName(data.container_name, selectedContainerName),
+          prompt: data.terminal_prompt || `root@${selectedContainerName}:/# `,
           kind: 'container',
           usesNativePrompt: true,
         });
@@ -2132,6 +2133,56 @@ export default function Home() {
     }
   };
 
+  const handleShellAutocomplete = async (event) => {
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    if (!shellSessionId || shellInputLoading) return;
+
+    setShellInputLoading(true);
+    try {
+      const response = await authService.autocompleteTerminal({
+        sessionId: shellSessionId,
+        input: shellInput,
+        cwd: activeShellContainer?.path || '/',
+      });
+      const data = response.data || {};
+      setShellInput(data.input ?? shellInput);
+      if (!data.completed && data.matches?.length > 1) {
+        setShellOutput((current) => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${data.matches.join('  ')}\n`);
+      }
+    } catch (error) {
+      setConnectMessage(error.response?.data?.error || 'Terminal autocomplete failed.');
+    } finally {
+      setShellInputLoading(false);
+      window.setTimeout(() => shellInputRef.current?.focus(), 0);
+    }
+  };
+
+  const handleVolumeShellAutocomplete = async (event) => {
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    if (!volumeShellSessionId || volumeShellInputLoading) return;
+
+    setVolumeShellInputLoading(true);
+    try {
+      const response = await authService.autocompleteTerminal({
+        sessionId: volumeShellSessionId,
+        input: volumeShellInput,
+        cwd: activeVolumeShell?.path || '/',
+      });
+      const data = response.data || {};
+      setVolumeShellInput(data.input ?? volumeShellInput);
+      if (!data.completed && data.matches?.length > 1) {
+        setVolumeShellOutput((current) => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${data.matches.join('  ')}\n`);
+      }
+    } catch (error) {
+      setConnectMessage(error.response?.data?.error || 'Volume terminal autocomplete failed.');
+    } finally {
+      setVolumeShellInputLoading(false);
+      window.setTimeout(() => volumeShellInputRef.current?.focus(), 0);
+    }
+  };
+
   const handleCloseVolumeShell = async () => {
     const cleanupPromise = closeActiveVolumeShellSession();
     setVolumeConnectModalOpen(false);
@@ -2152,13 +2203,14 @@ export default function Home() {
   const handleConnectVolumeClick = async (mount) => {
     if (!selectedContainer || !mount) return;
     const selectedContainerId = selectedContainer.ID || selectedContainer.Id || selectedContainer.id;
-    const volumeLabel = mount.Name || mount.Source || mount.Destination || 'volume';
-    const selectedContainerName = getContainerName(selectedContainer);
+    const volumeLabel = getTerminalName(mount.Name || mount.Source || mount.Destination, 'volume');
+    const selectedContainerName = getTerminalName(getContainerName(selectedContainer), 'container');
     const volumeKey = getMountConnectKey(mount);
 
     setConnectLoading(true);
     setConnectTarget({ type: 'volume', key: volumeKey });
     setConnectMessage('');
+    setVolumeShellInput('');
     await closeActiveVolumeShellSession();
     setActiveVolumeShell(null);
     setVolumeShellOutput('');
@@ -2179,8 +2231,8 @@ export default function Home() {
         setVolumeShellOutput(data.output || "");
         setActiveVolumeShell({
           id: data.temporary_container || data.session_id,
-          name: data.volume_name || volumeLabel,
-          containerName: data.container_name || selectedContainerName,
+          name: getTerminalName(data.volume_name, volumeLabel),
+          containerName: getTerminalName(data.container_name, selectedContainerName),
           path: data.terminal_path || data.volume_destination || '/',
           prompt: data.terminal_prompt || '/ #',
           kind: 'volume',
@@ -3120,12 +3172,13 @@ export default function Home() {
 
   const handleDeploymentConnect = async (container) => {
     const containerId = getDeploymentContainerId(container);
-    const containerName = container?.name || 'container';
+    const containerName = getTerminalName(getContainerName(container), 'container');
     if (!containerId) return;
 
     setConnectLoading(true);
     setConnectTarget({ type: 'deployment-container', key: containerId });
     setConnectMessage('');
+    setShellInput('');
     await closeActiveShellSession();
     setActiveShellContainer(null);
     setShellOutput('');
@@ -3139,8 +3192,8 @@ export default function Home() {
         setShellOutput(data.output);
         setActiveShellContainer({
           id: data.container_id || containerId,
-          name: data.container_name || containerName,
-          prompt: data.terminal_prompt || '',
+          name: getTerminalName(data.container_name, containerName),
+          prompt: data.terminal_prompt || `root@${containerName}:/# `,
           kind: 'container',
           usesNativePrompt: true,
         });
@@ -3611,6 +3664,7 @@ export default function Home() {
             shellInputLoading={shellInputLoading}
             shellInputRef={shellInputRef}
             onShellInputChange={setShellInput}
+            onShellInputKeyDown={handleShellAutocomplete}
             onSendShellCommand={handleSendShellCommand}
             onCloseConnectModal={handleCloseShell}
             onConnectModalDragStart={handleConnectModalDragStart}
@@ -3742,6 +3796,8 @@ export default function Home() {
             shellInputRef={shellInputRef}
             onShellInputChange={setShellInput}
             onVolumeShellInputChange={setVolumeShellInput}
+            onShellInputKeyDown={handleShellAutocomplete}
+            onVolumeShellInputKeyDown={handleVolumeShellAutocomplete}
             onSendShellCommand={handleSendShellCommand}
             onSendVolumeShellCommand={handleSendVolumeShellCommand}
             onContainerNameChange={setContainerName}
@@ -3899,6 +3955,7 @@ export default function Home() {
               setContainerLogTarget(null);
             }}
             onShellInputChange={setShellInput}
+            onShellInputKeyDown={handleShellAutocomplete}
             onSendShellCommand={handleSendShellCommand}
             onCloseConnectModal={handleCloseShell}
             onConnectModalDragStart={handleConnectModalDragStart}
@@ -4259,6 +4316,7 @@ function MonitoringPanel({
   shellInputLoading,
   shellInputRef,
   onShellInputChange,
+  onShellInputKeyDown,
   onSendShellCommand,
   onCloseConnectModal,
   onConnectModalDragStart,
@@ -4279,6 +4337,10 @@ function MonitoringPanel({
   useEffect(() => {
     if (terminalOutputRef.current) terminalOutputRef.current.scrollTop = terminalOutputRef.current.scrollHeight;
   }, [shellOutput, connectModalOpen]);
+
+  useEffect(() => {
+    if (connectModalOpen) window.setTimeout(() => shellInputRef.current?.focus(), 0);
+  }, [connectModalOpen, activeShellContainer?.name]);
 
   useEffect(() => {
     setDeleteConfirmOpen(false);
@@ -4402,10 +4464,13 @@ function MonitoringPanel({
       {connectModalOpen && activeShellContainer && (
         <OutputPortal><div className="output-modal connect-modal terminal-modal container-terminal-modal" role="dialog" aria-modal="true" aria-labelledby="monitoring-terminal-title" style={{ left: connectModalPosition.x + 'px', top: connectModalPosition.y + 'px', transform: 'none' }} onPointerDown={onConnectModalDragStart}>
           <div className="output-modal-heading draggable"><h3 id="monitoring-terminal-title">Connected to {activeShellContainer.name}</h3><button type="button" onClick={onCloseConnectModal} onPointerDown={(event) => event.stopPropagation()}>Close</button></div>
-          <div className="terminal-banner">connected to {activeShellContainer.name}</div>
+          <div className="terminal-banner">
+            connected to {activeShellContainer.name}
+            <span>{activeShellContainer.prompt || `root@${activeShellContainer.name}:/#`}</span>
+          </div>
           <div className="terminal-output" ref={terminalOutputRef} onClick={() => shellInputRef.current?.focus()} onPointerDown={(event) => event.stopPropagation()}>
             <pre>{shellOutput}</pre>
-            {shellSessionId && <form className="terminal-input-form" onSubmit={onSendShellCommand}><input ref={shellInputRef} type="text" className="terminal-input" value={shellInput} onChange={(event) => onShellInputChange(event.target.value)} disabled={shellInputLoading} autoComplete="off" spellCheck="false" aria-label={'Terminal command for ' + activeShellContainer.name} autoFocus /></form>}
+            {shellSessionId && <form className="terminal-input-form" onSubmit={onSendShellCommand}><input ref={shellInputRef} type="text" className="terminal-input" value={shellInput} onChange={(event) => onShellInputChange(event.target.value)} onKeyDown={onShellInputKeyDown} disabled={shellInputLoading} autoComplete="off" spellCheck="false" aria-label={'Terminal command for ' + activeShellContainer.name} autoFocus /></form>}
           </div>
         </div></OutputPortal>
       )}
@@ -4544,10 +4609,12 @@ function DashboardPanel({
 }
 
 function DashboardAgentTerminal({ server, serverId, onClose }) {
+  const displayName = server?.name || (serverId === LOCAL_SERVER_ID ? 'Application server' : 'Server');
+  const terminalName = getTerminalName(displayName, serverId === LOCAL_SERVER_ID ? 'application-server' : 'server');
   const [cwd, setCwd] = useState('/');
   const [command, setCommand] = useState('');
   const [output, setOutput] = useState(
-    `Connected to ${server?.name || 'Application server'}.\nHost commands run with agent-level administrative access.\n`
+    `Connected to ${displayName}.\nHost commands run with agent-level administrative access.\n`
   );
   const [running, setRunning] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
@@ -4581,7 +4648,7 @@ function DashboardAgentTerminal({ server, serverId, onClose }) {
     };
   }, [drag]);
 
-  const prompt = `root@${server?.name || 'server'}:${cwd}#`;
+  const prompt = `root@${terminalName}:${cwd}#`;
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -4622,6 +4689,28 @@ function DashboardAgentTerminal({ server, serverId, onClose }) {
   };
 
   const handleHistoryKeyDown = (event) => {
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      if (running) return;
+      setRunning(true);
+      authService.autocompleteTerminal({
+        serverId,
+        input: command,
+        cwd,
+      }).then((response) => {
+        const data = response.data || {};
+        setCommand(data.input ?? command);
+        if (!data.completed && data.matches?.length > 1) {
+          setOutput((current) => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${data.matches.join('  ')}\n`);
+        }
+      }).catch((error) => {
+        setOutput((current) => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${error.response?.data?.error || 'Terminal autocomplete failed.'}\n`);
+      }).finally(() => {
+        setRunning(false);
+        window.setTimeout(() => inputRef.current?.focus(), 0);
+      });
+      return;
+    }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
     event.preventDefault();
     if (!history.length) return;
@@ -4663,7 +4752,7 @@ function DashboardAgentTerminal({ server, serverId, onClose }) {
           }}
         >
           <div>
-            <h3 id="dashboard-agent-terminal-title">{server?.name || 'Application server'} CLI</h3>
+            <h3 id="dashboard-agent-terminal-title">{displayName} CLI</h3>
             <p>{serverId === LOCAL_SERVER_ID ? 'Application server' : `${server?.server_ip}:${server?.port || 19541}`} - {cwd}</p>
           </div>
           <span className={`dashboard-terminal-status ${running ? 'running' : ''}`}>{running ? 'Running' : 'Connected'}</span>
@@ -4978,6 +5067,8 @@ function CreateContainerPanel({
   shellInputRef,
   onShellInputChange,
   onVolumeShellInputChange,
+  onShellInputKeyDown,
+  onVolumeShellInputKeyDown,
   onSendShellCommand,
   onSendVolumeShellCommand,
   onContainerNameChange,
@@ -5084,10 +5175,18 @@ function CreateContainerPanel({
   }, [shellOutput, connectModalOpen]);
 
   useEffect(() => {
+    if (connectModalOpen) window.setTimeout(() => shellInputRef.current?.focus(), 0);
+  }, [connectModalOpen, activeShellContainer?.name]);
+
+  useEffect(() => {
     if (volumeTerminalOutputRef.current) {
       volumeTerminalOutputRef.current.scrollTop = volumeTerminalOutputRef.current.scrollHeight;
     }
   }, [volumeShellOutput, volumeConnectModalOpen]);
+
+  useEffect(() => {
+    if (volumeConnectModalOpen) window.setTimeout(() => volumeShellInputRef.current?.focus(), 0);
+  }, [volumeConnectModalOpen, activeVolumeShell?.name]);
 
   const getContainerNetworkNames = (container) =>
     (container.networks || []).map((network) => network.name).filter(Boolean);
@@ -5970,7 +6069,10 @@ function CreateContainerPanel({
                 Close
               </button>
             </div>
-            <div className="terminal-banner">connected to {terminalContainerName}</div>
+            <div className="terminal-banner">
+              connected to {terminalContainerName}
+              <span>{activeShellContainer.prompt || terminalPrompt}</span>
+            </div>
             <div
               className="terminal-output"
               ref={terminalOutputRef}
@@ -5987,6 +6089,7 @@ function CreateContainerPanel({
                     className="terminal-input"
                     value={shellInput}
                     onChange={(event) => onShellInputChange(event.target.value)}
+                    onKeyDown={onShellInputKeyDown}
                     disabled={shellInputLoading}
                     autoComplete="off"
                     spellCheck="false"
@@ -6021,7 +6124,10 @@ function CreateContainerPanel({
                 Close
               </button>
             </div>
-            <div className="terminal-banner">connected to {activeVolumeShell.containerName || "container"} volume {activeVolumeShell.name}</div>
+            <div className="terminal-banner">
+              connected to {getTerminalName(activeVolumeShell.containerName, "container")} volume {getTerminalName(activeVolumeShell.name, "volume")}
+              <span>{`root@${getTerminalName(activeVolumeShell.containerName, "container")}:${activeVolumeShell.path || "/"}#`}</span>
+            </div>
             <div
               className="terminal-output"
               ref={volumeTerminalOutputRef}
@@ -6038,6 +6144,7 @@ function CreateContainerPanel({
                     className="terminal-input"
                     value={volumeShellInput}
                     onChange={(event) => onVolumeShellInputChange(event.target.value)}
+                    onKeyDown={onVolumeShellInputKeyDown}
                     disabled={volumeShellInputLoading}
                     autoComplete="off"
                     spellCheck="false"
@@ -6243,6 +6350,17 @@ function getContainerName(container) {
 
   if (typeof rawName !== 'string') return 'Unknown';
   return rawName.trim().replace(/^\/+/, '') || 'Unknown';
+}
+
+function getTerminalName(value, fallback = 'terminal') {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/^\/+/, '')
+    .replace(/\s+/g, '-')
+    .replace(/[^a-zA-Z0-9_.:/-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.:/]+|[-.:/]+$/g, '');
+  return normalized && normalized.toLowerCase() !== 'unknown' ? normalized : fallback;
 }
 
 function asArray(value) {
@@ -6993,6 +7111,7 @@ function DeploymentPanel({
   onSelectedDeploymentVolumeChange,
   onCloseContainerLogOutput,
   onShellInputChange,
+  onShellInputKeyDown,
   onSendShellCommand,
   onCloseConnectModal,
   onConnectModalDragStart,
@@ -7036,6 +7155,10 @@ function DeploymentPanel({
       terminalOutputRef.current.scrollTop = terminalOutputRef.current.scrollHeight;
     }
   }, [shellOutput, connectModalOpen]);
+
+  useEffect(() => {
+    if (connectModalOpen) window.setTimeout(() => shellInputRef.current?.focus(), 0);
+  }, [connectModalOpen, activeShellContainer?.name]);
 
   return (
     <section className="home-panel deployment-panel">
@@ -7553,6 +7676,10 @@ function DeploymentPanel({
                 Close
               </button>
             </div>
+            <div className="terminal-banner">
+              connected to {activeShellContainer.name}
+              <span>{activeShellContainer.prompt || `root@${activeShellContainer.name}:/#`}</span>
+            </div>
             <div
               className="terminal-output"
               ref={terminalOutputRef}
@@ -7569,6 +7696,7 @@ function DeploymentPanel({
                     className="terminal-input"
                     value={shellInput}
                     onChange={(event) => onShellInputChange(event.target.value)}
+                    onKeyDown={onShellInputKeyDown}
                     disabled={shellInputLoading}
                     autoComplete="off"
                     spellCheck="false"

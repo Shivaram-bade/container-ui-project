@@ -18,6 +18,7 @@ function App() {
     '/agents/create',
     '/agents/connected',
     '/monitoring',
+    '/notifications',
     '/api/auth/deployment-detail',
     '/api/auth/deployment-detail/:deploymentId',
     '/api/auth/deployment-detail/*',

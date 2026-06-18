@@ -94,6 +94,14 @@ const monitoringAction = {
   //description: 'Watch live health, utilization, networking, and lifecycle data for every container.',
 };
 
+const notificationsAction = {
+  id: 'notifications',
+  icon: 'NT',
+  path: '/notifications',
+  title: 'Notifications',
+ // description: 'Review application activity, operation results, and errors.',
+};
+
 const userProfileAction = {
   id: 'user-profile',
   icon: 'ME',
@@ -125,9 +133,48 @@ const LOGIN_ENTRANCE_STORAGE_KEY = 'vitel-login-entrance';
 const AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json';
 const AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json';
 const LOCAL_SERVER_ID = 'local';
+const NOTIFICATION_LIMIT = 150;
 const buildImageAction = homeActions.find((action) => action.id === 'image');
-const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, rbacAction, userProfileAction, ...agentActions];
+const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, notificationsAction, rbacAction, userProfileAction, ...agentActions];
 const DashboardBackContext = createContext(null);
+
+const getNotificationStorageKey = (user) => `vitel-notifications:${user?.id || user?.username || 'default'}`;
+
+const readStoredNotifications = (user) => {
+  try {
+    const value = JSON.parse(localStorage.getItem(getNotificationStorageKey(user)) || '[]');
+    return Array.isArray(value) ? value.slice(0, NOTIFICATION_LIMIT) : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const getNotificationType = (message) => (
+  /unable|failed|failure|error|cannot|can't|missing|not found|does not match|must be|stopped unexpectedly/i.test(message)
+    ? 'error'
+    : /running|queued|starting|restoring|opening|requested|waiting/i.test(message)
+      ? 'info'
+      : 'success'
+);
+
+const formatNotificationTime = (createdAt) => {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return '';
+  const elapsed = Date.now() - date.getTime();
+  if (elapsed < 60_000) return 'Just now';
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  return date.toLocaleString();
+};
+
+function BellIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M18 8a6 6 0 00-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+      <path d="M10 21h4" />
+    </svg>
+  );
+}
 
 function OutputPortal({ children }) {
   if (typeof document === 'undefined') return null;
@@ -175,7 +222,7 @@ const CONTAINER_REGISTRIES = [
   },
 ];
 
-const renderNavItem = (action, active, onClick) => (
+const renderNavItem = (action, active, onClick, showUnread = false) => (
   <button
     type="button"
     key={action.id}
@@ -187,6 +234,7 @@ const renderNavItem = (action, active, onClick) => (
       <span className="home-nav-label">{action.title}</span>
       <small>{action.description}</small>
     </span>
+    {showUnread ? <span className="notification-unread-dot nav-dot" aria-label="Unread notifications" /> : null}
   </button>
 );
 
@@ -548,6 +596,12 @@ export default function Home() {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState('');
   const [currentUser, setCurrentUser] = useState(() => getStoredUser());
+  const [notifications, setNotifications] = useState(() => readStoredNotifications(getStoredUser()));
+  const [bellOpen, setBellOpen] = useState(false);
+  const [activeToast, setActiveToast] = useState(null);
+  const notificationSignalRef = useRef({});
+  const notificationHydratingRef = useRef(false);
+  const bellTimerRef = useRef(null);
   const user = currentUser;
   const userOperations = new Set(user?.operations || []);
   const hasPermissionData = Array.isArray(user?.operations);
@@ -579,6 +633,7 @@ export default function Home() {
   const isCreateAgentActive = activeAction.id === 'agent-create';
   const isConnectedAgentActive = activeAction.id === 'agent-connected';
   const isMonitoringActive = activeAction.id === 'monitoring';
+  const isNotificationsActive = activeAction.id === 'notifications';
   const isContainerActive = activeAction.id === 'container';
   const isBuildImageActive = activeAction.id === 'image';
   const isDeploymentActive = activeAction.id === 'deployment';
@@ -587,6 +642,7 @@ export default function Home() {
   const isNetworkActive = activeAction.id === 'network';
   const isVolumeActive = activeAction.id === 'volume';
   const isRbacActive = activeAction.id === 'rbac';
+  const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
 
   useEffect(() => {
     setActiveAction(getActionForPath(location.pathname));
@@ -626,6 +682,136 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    notificationHydratingRef.current = true;
+    setNotifications(readStoredNotifications(currentUser));
+    notificationSignalRef.current = {};
+  }, [currentUser?.id, currentUser?.username]);
+
+  useEffect(() => {
+    if (notificationHydratingRef.current) {
+      notificationHydratingRef.current = false;
+      return;
+    }
+    localStorage.setItem(
+      getNotificationStorageKey(currentUser),
+      JSON.stringify(notifications.slice(0, NOTIFICATION_LIMIT))
+    );
+  }, [notifications, currentUser?.id, currentUser?.username]);
+
+  useEffect(() => {
+    if (!activeToast) return undefined;
+    const timer = window.setTimeout(() => setActiveToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [activeToast?.id]);
+
+  useEffect(() => () => {
+    if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
+  }, []);
+
+  const addNotification = (message, category = 'Application') => {
+    const normalizedMessage = String(message || '').trim();
+    if (!normalizedMessage) return;
+    const notification = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      message: normalizedMessage,
+      category,
+      type: getNotificationType(normalizedMessage),
+      createdAt: new Date().toISOString(),
+      read: false,
+    };
+    setNotifications((current) => [notification, ...current].slice(0, NOTIFICATION_LIMIT));
+    setActiveToast(notification);
+  };
+
+  useEffect(() => {
+    const signals = [
+      ['account', 'Account', passwordMessage],
+      ['rbac', 'Users & Access', rbacMessage],
+      ['agent', 'Agent', agentMessage],
+      ['container', 'Containers', containerMessage],
+      ['container-action', 'Containers', containerActionMessage],
+      ['restore-container', 'Containers', restoreContainerMessage],
+      ['delete-recycled-container', 'Containers', deleteRecycledContainerMessage],
+      ['monitoring', 'Monitoring', monitoringMessage],
+      ['terminal', 'Terminal', connectMessage],
+      ['volume-gui', 'Volumes', volumeGuiMessage],
+      ['image-build', 'Images', buildMessage],
+      ['image-delete', 'Images', imageDeleteMessage],
+      ['deployment', 'Deployments', deploymentMessage],
+      ['deployment-action', 'Deployments', deploymentActionMessage],
+      ['registry', 'Registry', registryDeployMessage],
+      ['network', 'Networks', networkMessage],
+      ['network-delete', 'Networks', networkDeleteMessage],
+      ['volume', 'Volumes', volumeMessage],
+      ['volume-delete', 'Volumes', volumeDeleteMessage],
+    ];
+
+    signals.forEach(([key, category, message]) => {
+      const normalizedMessage = String(message || '').trim();
+      if (!normalizedMessage) {
+        notificationSignalRef.current[key] = '';
+        return;
+      }
+      if (notificationSignalRef.current[key] === normalizedMessage) return;
+      notificationSignalRef.current[key] = normalizedMessage;
+      addNotification(normalizedMessage, category);
+    });
+  }, [
+    passwordMessage,
+    rbacMessage,
+    agentMessage,
+    containerMessage,
+    containerActionMessage,
+    restoreContainerMessage,
+    deleteRecycledContainerMessage,
+    monitoringMessage,
+    connectMessage,
+    volumeGuiMessage,
+    buildMessage,
+    imageDeleteMessage,
+    deploymentMessage,
+    deploymentActionMessage,
+    registryDeployMessage,
+    networkMessage,
+    networkDeleteMessage,
+    volumeMessage,
+    volumeDeleteMessage,
+  ]);
+
+  const markAllNotificationsRead = () => {
+    setNotifications((current) => current.map((notification) => (
+      notification.read ? notification : { ...notification, read: true }
+    )));
+  };
+
+  const handleBellClick = () => {
+    if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
+    if (bellOpen) {
+      setBellOpen(false);
+      return;
+    }
+    markAllNotificationsRead();
+    setBellOpen(true);
+    bellTimerRef.current = window.setTimeout(() => setBellOpen(false), 10000);
+  };
+
+  const handleOpenNotifications = () => {
+    if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
+    setBellOpen(false);
+    markAllNotificationsRead();
+    handleActionSelect(notificationsAction);
+  };
+
+  const handleRemoveNotification = (notificationId) => {
+    setNotifications((current) => current.filter((notification) => notification.id !== notificationId));
+  };
+
+  const handleClearNotifications = () => {
+    setNotifications([]);
+    setActiveToast(null);
+  };
+
   const handleActionSelect = (action) => {
     if (action.id !== 'dashboard' && !canSeeAction(action)) return;
     if (action.id === 'container' && !canOperate('create_container')) {
@@ -655,6 +841,13 @@ export default function Home() {
     setActiveAction(dashboardAction);
     navigate(dashboardAction.path, { replace: true });
   }, [currentUser, activeAction.id]);
+
+  useEffect(() => {
+    if (!isNotificationsActive) return;
+    if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
+    setBellOpen(false);
+    markAllNotificationsRead();
+  }, [isNotificationsActive]);
 
   const handleChangePassword = async (event) => {
     event.preventDefault();
@@ -1864,6 +2057,10 @@ export default function Home() {
     if (target === 'monitoring') {
       setMonitoringServerId(dashboardServerId);
       handleActionSelect(monitoringAction);
+      return;
+    }
+    if (target === 'notifications') {
+      handleOpenNotifications();
     }
   };
 
@@ -3502,6 +3699,13 @@ export default function Home() {
             isMonitoringActive,
             () => handleActionSelect(monitoringAction)
           )}
+
+          {renderNavItem(
+            notificationsAction,
+            isNotificationsActive,
+            handleOpenNotifications,
+            unreadNotificationCount > 0
+          )}
         </nav>
 
         <button type="button" className="home-logout" onClick={handleLogout}>
@@ -3516,16 +3720,36 @@ export default function Home() {
             <p>{activeAction.description}</p>
           </div>
           <div className="home-header-actions">
+            <div className="notification-bell-wrap">
+              <button
+                type="button"
+                className={`notification-bell-button ${bellOpen ? 'active' : ''}`}
+                onClick={handleBellClick}
+                aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`}
+                aria-expanded={bellOpen}
+              >
+                <BellIcon />
+                {unreadNotificationCount > 0 ? <span className="notification-unread-dot bell-dot" /> : null}
+              </button>
+              {bellOpen ? (
+                <NotificationBellPopup
+                  notifications={notifications.slice(0, 6)}
+                  onOpenAll={handleOpenNotifications}
+                  onRemove={handleRemoveNotification}
+                  onClose={() => setBellOpen(false)}
+                />
+              ) : null}
+            </div>
             <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={!canSeeAction(userProfileAction)}>
               <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
-              <span className="home-user-copy"><span>Workspace</span>
+              <span className="home-user-copy"><span></span>
               <strong>{user?.name || user?.username || 'Signed-in user'}</strong>
-              <small>User Profile</small></span>
+              </span>
             </button>
           </div>
         </header>
 
-        <DashboardBackContext.Provider value={isDashboardActive ? null : handleBackToDashboard}>
+        <DashboardBackContext.Provider value={isDashboardActive || isNotificationsActive ? null : handleBackToDashboard}>
           {isDashboardActive ? (
           <DashboardPanel
             dashboardServerId={dashboardServerId}
@@ -3549,6 +3773,8 @@ export default function Home() {
             recycledContainers={recycledContainers}
             recycledContainersLoading={recycledContainersLoading}
             recycledContainersError={recycledContainersError}
+            notificationCount={notifications.length}
+            unreadNotificationCount={unreadNotificationCount}
             onRefresh={() => {
               const serverId = dashboardServerId || LOCAL_SERVER_ID;
               if ([
@@ -3565,6 +3791,13 @@ export default function Home() {
             }}
             onOpenResource={handleDashboardNavigate}
             canOperate={canOperate}
+          />
+        ) : isNotificationsActive ? (
+          <NotificationsPanel
+            notifications={notifications}
+            onRemove={handleRemoveNotification}
+            onClear={handleClearNotifications}
+            onClose={handleBackToDashboard}
           />
         ) : isUserProfileActive ? (
           <UserProfilePanel
@@ -4110,8 +4343,130 @@ export default function Home() {
           </section>
           )}
         </DashboardBackContext.Provider>
+
+        {activeToast ? (
+          <GlobalNotificationToast
+            notification={activeToast}
+            onClose={() => setActiveToast(null)}
+          />
+        ) : null}
       </main>
     </div>
+  );
+}
+
+function NotificationStatusIcon({ type }) {
+  return (
+    <span className={`notification-status-icon ${type}`} aria-hidden="true">
+      {type === 'error' ? '!' : type === 'info' ? 'i' : '✓'}
+    </span>
+  );
+}
+
+function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose }) {
+  return (
+    <section className="notification-bell-popup" aria-label="Recent notifications">
+      <header>
+        <div>
+          <strong>Notifications</strong>
+          <small>Recent application activity</small>
+        </div>
+        <button type="button" className="notification-popup-close" onClick={onClose} aria-label="Close notifications">×</button>
+      </header>
+      <div className="notification-popup-list">
+        {notifications.length ? notifications.map((notification) => (
+          <article className={`notification-popup-item ${notification.type}`} key={notification.id}>
+            <NotificationStatusIcon type={notification.type} />
+            <div>
+              <strong>{notification.category}</strong>
+              <p>{notification.message}</p>
+              <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
+            </div>
+            <button
+              type="button"
+              className="notification-remove-button"
+              onClick={() => onRemove(notification.id)}
+              aria-label={`Remove notification: ${notification.message}`}
+              title="Remove notification"
+            >
+              ×
+            </button>
+          </article>
+        )) : (
+          <p className="notification-empty">No notifications yet.</p>
+        )}
+      </div>
+      <button type="button" className="notification-view-all" onClick={onOpenAll}>
+        View all notifications
+      </button>
+    </section>
+  );
+}
+
+function NotificationsPanel({ notifications, onRemove, onClear, onClose }) {
+  return (
+    <section className="home-panel notifications-panel">
+      <PanelIntro
+        title="Notifications"
+        description="Application actions and operation results, newest first."
+      >
+        <button type="button" className="home-danger-button" onClick={onClear} disabled={!notifications.length}>
+          Clear all
+        </button>
+        <button type="button" className="home-secondary-button" onClick={onClose}>
+          Close
+        </button>
+      </PanelIntro>
+
+      <div className="notifications-summary">
+        <span>{notifications.length}</span>
+        <div><strong>Total notifications</strong></div>
+      </div>
+
+      <div className="notifications-list">
+        {notifications.length ? notifications.map((notification) => (
+          <article className={`notification-row ${notification.type}`} key={notification.id}>
+            <NotificationStatusIcon type={notification.type} />
+            <div className="notification-row-copy">
+              <div>
+                <strong>{notification.category}</strong>
+                <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
+              </div>
+              <p>{notification.message}</p>
+            </div>
+            <button
+              type="button"
+              className="notification-remove-button"
+              onClick={() => onRemove(notification.id)}
+              aria-label={`Remove notification: ${notification.message}`}
+              title="Remove notification"
+            >
+              ×
+            </button>
+          </article>
+        )) : (
+          <div className="notification-empty-state">
+            <BellIcon />
+            <h3>No notifications</h3>
+            <p>Create, deploy, delete, or update a resource and its result will appear here.</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function GlobalNotificationToast({ notification, onClose }) {
+  return (
+    <aside className={`global-notification-toast ${notification.type}`} role="status" aria-live="polite">
+      <NotificationStatusIcon type={notification.type} />
+      <div>
+        <strong>{notification.category}</strong>
+        <p>{notification.message}</p>
+      </div>
+      <button type="button" onClick={onClose} aria-label="Dismiss notification">×</button>
+      <span className="global-toast-timer" aria-hidden="true" />
+    </aside>
   );
 }
 
@@ -4500,6 +4855,8 @@ function DashboardPanel({
   recycledContainers,
   recycledContainersLoading,
   recycledContainersError,
+  notificationCount = 0,
+  unreadNotificationCount = 0,
   onRefresh,
   onOpenResource,
   canOperate = () => true,
@@ -4526,7 +4883,15 @@ function DashboardPanel({
     { key: 'networks', permission: 'view_networks', title: 'Networks', value: networks.length, meta: 'Connection fabric', visual: 'networks' },
     { key: 'images', permission: 'view_images', title: 'Images', value: images.length, meta: 'Build artifacts', visual: 'images' },
     { key: 'deployments', permission: 'view_deployments', title: 'Deployments', value: deployments.length, meta: 'Compose applications', visual: 'deployments' },
-  ].filter((card) => canOperate(card.permission));
+    {
+      key: 'notifications',
+      title: 'Notifications',
+      value: notificationCount,
+      meta: unreadNotificationCount ? `${unreadNotificationCount} unread` : 'All caught up',
+      visual: 'notifications',
+      unread: unreadNotificationCount > 0,
+    },
+  ].filter((card) => !card.permission || canOperate(card.permission));
 
   return (
     <section className="home-panel dashboard-panel">
@@ -4585,10 +4950,11 @@ function DashboardPanel({
           <button
             type="button"
             key={card.key}
-            className="dashboard-card"
+            className={`dashboard-card${card.unread ? ' has-unread-notifications' : ''}`}
             onClick={() => onOpenResource(card.key)}
           >
             <DashboardVisual type={card.visual} />
+            {card.unread ? <span className="dashboard-notification-dot" aria-label="Unread notifications" /> : null}
             <span>{card.title}</span>
             {loading ? <SkeletonText className="dashboard-value-skeleton" /> : <strong>{card.value}</strong>}
             <small>{card.meta}</small>
@@ -4874,6 +5240,16 @@ function DashboardVisual({ type }) {
         <span className="dv-deployment-beam beam-a" />
         <span className="dv-deployment-beam beam-b" />
         <span className="dv-deployment-status" />
+      </>
+    ),
+    notifications: (
+      <>
+        <span className="dv-notification-bell">
+          <BellIcon />
+        </span>
+        <span className="dv-notification-ring ring-a" />
+        <span className="dv-notification-ring ring-b" />
+        <span className="dv-notification-alert" />
       </>
     ),
   };

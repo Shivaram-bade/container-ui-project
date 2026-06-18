@@ -82,4 +82,5 @@ services:
 networks:
   vitel-network:
     name: vitel-network
-    driver: bridgessss
+    driver: bridge
+

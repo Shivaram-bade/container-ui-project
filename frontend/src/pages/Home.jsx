@@ -605,7 +605,16 @@ export default function Home() {
   const user = currentUser;
   const userOperations = new Set(user?.operations || []);
   const hasPermissionData = Array.isArray(user?.operations);
-  const canOperate = (operation) => user?.is_admin || !hasPermissionData || userOperations.has('administrator') || userOperations.has(operation);
+  const canOperate = (operation) => {
+    if (user?.is_admin || !hasPermissionData || userOperations.has('administrator') || userOperations.has(operation)) return true;
+    if (operation === 'view_notifications') {
+      return userOperations.has('delete_notifications') || userOperations.has('notification_full');
+    }
+    if (operation === 'delete_notifications') {
+      return userOperations.has('notification_full');
+    }
+    return false;
+  };
   const canSeeAction = (action) => {
     const actionOperations = {
       container: ['create_container', 'view_running_containers', 'view_stopped_containers', 'view_recycle_bin', 'delete_container', 'connect_container'],
@@ -620,6 +629,7 @@ export default function Home() {
       'agent-create': ['create_agent', 'manage_agents', 'delete_agents'],
       'agent-connected': ['view_connected_agent', 'manage_agents'],
       monitoring: ['view_monitoring'],
+      notifications: ['view_notifications', 'delete_notifications', 'notification_full'],
     }[action.id];
     return !actionOperations || actionOperations.some((operation) => canOperate(operation));
   };
@@ -627,6 +637,8 @@ export default function Home() {
   const visibleAgentActions = agentActions.filter(canSeeAction);
   const canCreateRbacUser = canOperate('create_rbac_user');
   const canCreateRbacGroup = canOperate('create_rbac_group');
+  const canViewNotifications = canOperate('view_notifications');
+  const canDeleteNotifications = canOperate('delete_notifications');
   const isDashboardActive = activeAction.id === 'dashboard';
   const isUserProfileActive = activeAction.id === 'user-profile';
   const isServerInfoActive = activeAction.id === 'server-info';
@@ -709,45 +721,68 @@ export default function Home() {
     if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
   }, []);
 
-  const addNotification = (message, category = 'Application') => {
+  const getNotificationServerLabel = (serverId) => {
+    const normalizedServerId = String(serverId || LOCAL_SERVER_ID);
+    if (normalizedServerId === LOCAL_SERVER_ID) return 'Application server';
+    const agent = agents.find((item) => String(item.id) === normalizedServerId);
+    return agent?.name || `agent-${normalizedServerId}`;
+  };
+
+  const addNotification = (message, category = 'Application', serverId = '') => {
     const normalizedMessage = String(message || '').trim();
     if (!normalizedMessage) return;
+    const serverLabel = serverId ? getNotificationServerLabel(serverId) : '';
+    const serverTarget = serverLabel
+      ? (serverLabel.toLowerCase().endsWith('server') ? serverLabel : `${serverLabel} server`)
+      : '';
+    const preposition = /deleted|removed|detached/i.test(normalizedMessage) ? 'from' : 'on';
+    const contextualMessage = serverTarget && !normalizedMessage.toLowerCase().includes(serverTarget.toLowerCase())
+      ? `${normalizedMessage.replace(/[.\s]+$/, '')} ${preposition} ${serverTarget}.`
+      : normalizedMessage;
     const notification = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      message: normalizedMessage,
+      message: contextualMessage,
       category,
-      type: getNotificationType(normalizedMessage),
+      type: getNotificationType(contextualMessage),
+      server: serverLabel,
       createdAt: new Date().toISOString(),
       read: false,
     };
     setNotifications((current) => [notification, ...current].slice(0, NOTIFICATION_LIMIT));
-    setActiveToast(notification);
+    if (canViewNotifications) setActiveToast(notification);
   };
 
   useEffect(() => {
+    const selectedDeployment = deployments.find(
+      (deployment) => String(deployment.id) === String(selectedDeploymentId)
+    );
+    const deploymentNotificationServerId = deploymentDetail?.deployment?.target_agent?.id
+      || selectedDeployment?.target_agent?.id
+      || deploymentServerId
+      || LOCAL_SERVER_ID;
     const signals = [
       ['account', 'Account', passwordMessage],
       ['rbac', 'Users & Access', rbacMessage],
       ['agent', 'Agent', agentMessage],
-      ['container', 'Containers', containerMessage],
-      ['container-action', 'Containers', containerActionMessage],
-      ['restore-container', 'Containers', restoreContainerMessage],
-      ['delete-recycled-container', 'Containers', deleteRecycledContainerMessage],
-      ['monitoring', 'Monitoring', monitoringMessage],
-      ['terminal', 'Terminal', connectMessage],
-      ['volume-gui', 'Volumes', volumeGuiMessage],
-      ['image-build', 'Images', buildMessage],
-      ['image-delete', 'Images', imageDeleteMessage],
-      ['deployment', 'Deployments', deploymentMessage],
-      ['deployment-action', 'Deployments', deploymentActionMessage],
-      ['registry', 'Registry', registryDeployMessage],
-      ['network', 'Networks', networkMessage],
-      ['network-delete', 'Networks', networkDeleteMessage],
-      ['volume', 'Volumes', volumeMessage],
-      ['volume-delete', 'Volumes', volumeDeleteMessage],
+      ['container', 'Containers', containerMessage, containerServerId || LOCAL_SERVER_ID],
+      ['container-action', 'Containers', containerActionMessage, containerServerId || LOCAL_SERVER_ID],
+      ['restore-container', 'Containers', restoreContainerMessage, restoreContainerServerId || LOCAL_SERVER_ID],
+      ['delete-recycled-container', 'Containers', deleteRecycledContainerMessage, deleteRecycledContainerTarget?.target_server_id || deleteRecycledContainerTarget?.agent_id || LOCAL_SERVER_ID],
+      ['monitoring', 'Monitoring', monitoringMessage, monitoringServerId || LOCAL_SERVER_ID],
+      ['terminal', 'Terminal', connectMessage, containerServerId || LOCAL_SERVER_ID],
+      ['volume-gui', 'Volumes', volumeGuiMessage, containerServerId || LOCAL_SERVER_ID],
+      ['image-build', 'Images', buildMessage, imageServerId || LOCAL_SERVER_ID],
+      ['image-delete', 'Images', imageDeleteMessage, imageServerId || LOCAL_SERVER_ID],
+      ['deployment', 'Deployments', deploymentMessage, deploymentNotificationServerId],
+      ['deployment-action', 'Deployments', deploymentActionMessage, deploymentNotificationServerId],
+      ['registry', 'Registry', registryDeployMessage, registryAgentId || LOCAL_SERVER_ID],
+      ['network', 'Networks', networkMessage, networkServerId || LOCAL_SERVER_ID],
+      ['network-delete', 'Networks', networkDeleteMessage, networkServerId || LOCAL_SERVER_ID],
+      ['volume', 'Volumes', volumeMessage, volumeServerId || LOCAL_SERVER_ID],
+      ['volume-delete', 'Volumes', volumeDeleteMessage, volumeServerId || LOCAL_SERVER_ID],
     ];
 
-    signals.forEach(([key, category, message]) => {
+    signals.forEach(([key, category, message, serverId]) => {
       const normalizedMessage = String(message || '').trim();
       if (!normalizedMessage) {
         notificationSignalRef.current[key] = '';
@@ -755,7 +790,7 @@ export default function Home() {
       }
       if (notificationSignalRef.current[key] === normalizedMessage) return;
       notificationSignalRef.current[key] = normalizedMessage;
-      addNotification(normalizedMessage, category);
+      addNotification(normalizedMessage, category, serverId);
     });
   }, [
     passwordMessage,
@@ -777,6 +812,17 @@ export default function Home() {
     networkDeleteMessage,
     volumeMessage,
     volumeDeleteMessage,
+    containerServerId,
+    restoreContainerServerId,
+    monitoringServerId,
+    imageServerId,
+    deploymentServerId,
+    deploymentDetail?.deployment?.target_agent?.id,
+    selectedDeploymentId,
+    registryAgentId,
+    networkServerId,
+    volumeServerId,
+    agents,
   ]);
 
   const markAllNotificationsRead = () => {
@@ -786,6 +832,7 @@ export default function Home() {
   };
 
   const handleBellClick = () => {
+    if (!canViewNotifications) return;
     if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
     if (bellOpen) {
       setBellOpen(false);
@@ -797,6 +844,7 @@ export default function Home() {
   };
 
   const handleOpenNotifications = () => {
+    if (!canViewNotifications) return;
     if (bellTimerRef.current) window.clearTimeout(bellTimerRef.current);
     setBellOpen(false);
     markAllNotificationsRead();
@@ -804,10 +852,12 @@ export default function Home() {
   };
 
   const handleRemoveNotification = (notificationId) => {
+    if (!canDeleteNotifications) return;
     setNotifications((current) => current.filter((notification) => notification.id !== notificationId));
   };
 
   const handleClearNotifications = () => {
+    if (!canDeleteNotifications) return;
     setNotifications([]);
     setActiveToast(null);
   };
@@ -3700,7 +3750,7 @@ export default function Home() {
             () => handleActionSelect(monitoringAction)
           )}
 
-          {renderNavItem(
+          {canViewNotifications && renderNavItem(
             notificationsAction,
             isNotificationsActive,
             handleOpenNotifications,
@@ -3720,7 +3770,7 @@ export default function Home() {
             <p>{activeAction.description}</p>
           </div>
           <div className="home-header-actions">
-            <div className="notification-bell-wrap">
+            {canViewNotifications ? <div className="notification-bell-wrap">
               <button
                 type="button"
                 className={`notification-bell-button ${bellOpen ? 'active' : ''}`}
@@ -3737,9 +3787,10 @@ export default function Home() {
                   onOpenAll={handleOpenNotifications}
                   onRemove={handleRemoveNotification}
                   onClose={() => setBellOpen(false)}
+                  canDelete={canDeleteNotifications}
                 />
               ) : null}
-            </div>
+            </div> : null}
             <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={!canSeeAction(userProfileAction)}>
               <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
               <span className="home-user-copy"><span></span>
@@ -3773,8 +3824,8 @@ export default function Home() {
             recycledContainers={recycledContainers}
             recycledContainersLoading={recycledContainersLoading}
             recycledContainersError={recycledContainersError}
-            notificationCount={notifications.length}
-            unreadNotificationCount={unreadNotificationCount}
+            notificationCount={canViewNotifications ? notifications.length : null}
+            unreadNotificationCount={canViewNotifications ? unreadNotificationCount : 0}
             onRefresh={() => {
               const serverId = dashboardServerId || LOCAL_SERVER_ID;
               if ([
@@ -3798,6 +3849,7 @@ export default function Home() {
             onRemove={handleRemoveNotification}
             onClear={handleClearNotifications}
             onClose={handleBackToDashboard}
+            canDelete={canDeleteNotifications}
           />
         ) : isUserProfileActive ? (
           <UserProfilePanel
@@ -4344,7 +4396,7 @@ export default function Home() {
           )}
         </DashboardBackContext.Provider>
 
-        {activeToast ? (
+        {canViewNotifications && activeToast ? (
           <GlobalNotificationToast
             notification={activeToast}
             onClose={() => setActiveToast(null)}
@@ -4363,7 +4415,7 @@ function NotificationStatusIcon({ type }) {
   );
 }
 
-function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose }) {
+function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose, canDelete = false }) {
   return (
     <section className="notification-bell-popup" aria-label="Recent notifications">
       <header>
@@ -4382,15 +4434,17 @@ function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose }) 
               <p>{notification.message}</p>
               <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
             </div>
-            <button
-              type="button"
-              className="notification-remove-button"
-              onClick={() => onRemove(notification.id)}
-              aria-label={`Remove notification: ${notification.message}`}
-              title="Remove notification"
-            >
-              ×
-            </button>
+            {canDelete ? (
+              <button
+                type="button"
+                className="notification-remove-button"
+                onClick={() => onRemove(notification.id)}
+                aria-label={`Remove notification: ${notification.message}`}
+                title="Remove notification"
+              >
+                ×
+              </button>
+            ) : null}
           </article>
         )) : (
           <p className="notification-empty">No notifications yet.</p>
@@ -4403,16 +4457,18 @@ function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose }) 
   );
 }
 
-function NotificationsPanel({ notifications, onRemove, onClear, onClose }) {
+function NotificationsPanel({ notifications, onRemove, onClear, onClose, canDelete = false }) {
   return (
     <section className="home-panel notifications-panel">
       <PanelIntro
         title="Notifications"
         description="Application actions and operation results, newest first."
       >
-        <button type="button" className="home-danger-button" onClick={onClear} disabled={!notifications.length}>
-          Clear all
-        </button>
+        {canDelete ? (
+          <button type="button" className="home-danger-button" onClick={onClear} disabled={!notifications.length}>
+            Clear all
+          </button>
+        ) : null}
         <button type="button" className="home-secondary-button" onClick={onClose}>
           Close
         </button>
@@ -4420,7 +4476,10 @@ function NotificationsPanel({ notifications, onRemove, onClear, onClose }) {
 
       <div className="notifications-summary">
         <span>{notifications.length}</span>
-        <div><strong>Total notifications</strong></div>
+        <div>
+          <strong>Total notifications</strong>
+          {!canDelete ? <small>Read-only access</small> : null}
+        </div>
       </div>
 
       <div className="notifications-list">
@@ -4434,15 +4493,17 @@ function NotificationsPanel({ notifications, onRemove, onClear, onClose }) {
               </div>
               <p>{notification.message}</p>
             </div>
-            <button
-              type="button"
-              className="notification-remove-button"
-              onClick={() => onRemove(notification.id)}
-              aria-label={`Remove notification: ${notification.message}`}
-              title="Remove notification"
-            >
-              ×
-            </button>
+            {canDelete ? (
+              <button
+                type="button"
+                className="notification-remove-button"
+                onClick={() => onRemove(notification.id)}
+                aria-label={`Remove notification: ${notification.message}`}
+                title="Remove notification"
+              >
+                ×
+              </button>
+            ) : null}
           </article>
         )) : (
           <div className="notification-empty-state">
@@ -4883,15 +4944,15 @@ function DashboardPanel({
     { key: 'networks', permission: 'view_networks', title: 'Networks', value: networks.length, meta: 'Connection fabric', visual: 'networks' },
     { key: 'images', permission: 'view_images', title: 'Images', value: images.length, meta: 'Build artifacts', visual: 'images' },
     { key: 'deployments', permission: 'view_deployments', title: 'Deployments', value: deployments.length, meta: 'Compose applications', visual: 'deployments' },
-    {
+    notificationCount !== null ? {
       key: 'notifications',
       title: 'Notifications',
       value: notificationCount,
       meta: unreadNotificationCount ? `${unreadNotificationCount} unread` : 'All caught up',
       visual: 'notifications',
       unread: unreadNotificationCount > 0,
-    },
-  ].filter((card) => !card.permission || canOperate(card.permission));
+    } : null,
+  ].filter((card) => card && (!card.permission || canOperate(card.permission)));
 
   return (
     <section className="home-panel dashboard-panel">

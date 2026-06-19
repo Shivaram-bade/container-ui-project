@@ -81,6 +81,9 @@ OPERATION_PERMISSIONS = [
     {"code": "change_password", "label": "Change password", "category": "Account"},
     {"code": "view_server_info", "label": "Server health", "category": "Monitoring"},
     {"code": "view_monitoring", "label": "Container monitoring", "category": "Monitoring"},
+    {"code": "view_notifications", "label": "Notification view", "category": "Notifications"},
+    {"code": "delete_notifications", "label": "Notification delete", "category": "Notifications"},
+    {"code": "notification_full", "label": "Notification full access", "category": "Notifications"},
     {"code": "view_running_containers", "label": "Running containers", "category": "Containers"},
     {"code": "view_stopped_containers", "label": "Stopped containers", "category": "Containers"},
     {"code": "view_recycle_bin", "label": "Container recycle bin", "category": "Containers"},
@@ -111,7 +114,7 @@ OPERATION_CODES = {operation['code'] for operation in OPERATION_PERMISSIONS}
 def parse_operations(value):
     if not value:
         return []
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple, set)):
         items = value
     else:
         try:
@@ -129,6 +132,10 @@ def expand_operation_codes(operations):
     operation_codes = set(parse_operations(operations))
     if ADMINISTRATOR_OPERATION in operation_codes:
         return set(OPERATION_CODES)
+    if 'notification_full' in operation_codes:
+        operation_codes.update({'view_notifications', 'delete_notifications'})
+    if 'delete_notifications' in operation_codes:
+        operation_codes.add('view_notifications')
     return operation_codes
 
 
@@ -147,7 +154,7 @@ def get_user_operation_codes(user):
     for group in user.rbac_groups.all():
         group_operations.update(parse_operations(group.operations))
     if group_operations:
-        return set(OPERATION_CODES) if ADMINISTRATOR_OPERATION in group_operations else group_operations
+        return expand_operation_codes(group_operations)
 
     direct_operations = expand_operation_codes(profile.operations)
     if direct_operations:

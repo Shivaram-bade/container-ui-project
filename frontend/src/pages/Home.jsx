@@ -4443,7 +4443,7 @@ function EnvironmentSelectionModal({ onSelectDocker }) {
               <img src={dockerEnvironmentImage} alt="" />
             </span>
             <strong>Docker</strong>
-            <small>Open Docker environment</small>
+            <small>Docker environment</small>
           </button>
 
           <button type="button" className="environment-option kubernetes" disabled aria-disabled="true">

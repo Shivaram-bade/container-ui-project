@@ -380,6 +380,7 @@ export default function Login() {
         setSuccess('Login successful. Redirecting to your dashboard...');
         setTimeout(() => {
           sessionStorage.setItem('vitel-login-entrance', 'pending');
+          sessionStorage.setItem('vitel-environment-selector', 'pending');
           navigate('/home', { replace: true });
         }, 800);
       } else {

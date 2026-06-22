@@ -11,6 +11,8 @@ import runningContainersDashboardImage from '../assets/dashboard/running-contain
 import serverHealthDashboardImage from '../assets/dashboard/server-health-connection.png';
 import stoppedContainersDashboardImage from '../assets/dashboard/stopped-containers.png';
 import volumesDashboardImage from '../assets/dashboard/volumes-storage.png';
+import dockerEnvironmentImage from '../assets/environments/docker-environment.png';
+import kubernetesEnvironmentImage from '../assets/environments/kubernetes-environment.png';
 import '../styles/Home.css';
 
 const manualActions = [
@@ -130,6 +132,7 @@ const agentActions = [
 const BUILD_JOB_STORAGE_KEY = 'vitel-active-build-job-id';
 const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
 const LOGIN_ENTRANCE_STORAGE_KEY = 'vitel-login-entrance';
+const ENVIRONMENT_SELECTOR_STORAGE_KEY = 'vitel-environment-selector';
 const AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json';
 const AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json';
 const LOCAL_SERVER_ID = 'local';
@@ -378,6 +381,10 @@ export default function Home() {
   const location = useLocation();
   const navigate = useNavigate();
   const [playLoginEntrance, setPlayLoginEntrance] = useState(false);
+  const [environmentSelectorOpen, setEnvironmentSelectorOpen] = useState(() => (
+    typeof window !== 'undefined'
+    && sessionStorage.getItem(ENVIRONMENT_SELECTOR_STORAGE_KEY) === 'pending'
+  ));
   const [activeAction, setActiveAction] = useState(() => getActionForPath(location.pathname));
   const [manualMenuOpen, setManualMenuOpen] = useState(false);
   const [rbacMenuOpen, setRbacMenuOpen] = useState(false);
@@ -1551,7 +1558,13 @@ export default function Home() {
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');
+    sessionStorage.removeItem(ENVIRONMENT_SELECTOR_STORAGE_KEY);
     window.location.href = '/';
+  };
+
+  const handleSelectDockerEnvironment = () => {
+    sessionStorage.removeItem(ENVIRONMENT_SELECTOR_STORAGE_KEY);
+    setEnvironmentSelectorOpen(false);
   };
 
   const handleCreateContainer = async (event) => {
@@ -4403,7 +4416,48 @@ export default function Home() {
           />
         ) : null}
       </main>
+      {environmentSelectorOpen ? (
+        <EnvironmentSelectionModal onSelectDocker={handleSelectDockerEnvironment} />
+      ) : null}
     </div>
+  );
+}
+
+function EnvironmentSelectionModal({ onSelectDocker }) {
+  return createPortal(
+    <div className="environment-selector-backdrop" role="presentation">
+      <section
+        className="environment-selector-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="environment-selector-title"
+      >
+        <header>
+          <h2 id="environment-selector-title">Select your environment</h2>
+          <p>Choose the platform you want to manage.</p>
+        </header>
+
+        <div className="environment-selector-options">
+          <button type="button" className="environment-option docker" onClick={onSelectDocker} autoFocus>
+            <span className="environment-option-image" aria-hidden="true">
+              <img src={dockerEnvironmentImage} alt="" />
+            </span>
+            <strong>Docker</strong>
+            <small>Open Docker environment</small>
+          </button>
+
+          <button type="button" className="environment-option kubernetes" disabled aria-disabled="true">
+            <span className="environment-coming-soon">Coming soon</span>
+            <span className="environment-option-image" aria-hidden="true">
+              <img src={kubernetesEnvironmentImage} alt="" />
+            </span>
+            <strong>Kubernetes</strong>
+            <small>Cluster environment</small>
+          </button>
+        </div>
+      </section>
+    </div>,
+    document.body
   );
 }
 

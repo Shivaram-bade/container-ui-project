@@ -9607,6 +9607,203 @@ input[type="checkbox"] {
   }
 }
 
+/* Post-login environment selection. */
+.environment-selector-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(34, 211, 238, 0.14), transparent 38%),
+    rgba(2, 8, 23, 0.84);
+  backdrop-filter: blur(14px);
+}
+
+.environment-selector-modal {
+  width: min(680px, 100%);
+  border: 1px solid rgba(84, 225, 211, 0.3);
+  border-radius: 18px;
+  padding: 30px;
+  background:
+    linear-gradient(145deg, rgba(13, 30, 48, 0.98), rgba(5, 15, 28, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 32px 100px rgba(0, 0, 0, 0.58),
+    0 0 54px rgba(34, 211, 238, 0.14);
+  animation: environment-selector-arrival 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.environment-selector-modal > header {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.environment-selector-modal > header > span {
+  display: inline-flex;
+  margin-bottom: 8px;
+  border: 1px solid rgba(84, 225, 211, 0.32);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(84, 225, 211, 0.08);
+  color: #78f3e6;
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.18em;
+}
+
+.environment-selector-modal h2 {
+  margin: 0;
+  color: #f1f8ff;
+  font-size: clamp(24px, 4vw, 32px);
+}
+
+.environment-selector-modal header p {
+  margin: 8px 0 0;
+  color: #91a8ba;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.environment-selector-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.environment-option {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 250px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  border: 1px solid rgba(139, 163, 188, 0.24);
+  border-radius: 15px;
+  padding: 22px;
+  background: rgba(11, 27, 43, 0.74);
+  color: #eff8ff;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.environment-option.docker:hover,
+.environment-option.docker:focus-visible {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.76);
+  background: rgba(14, 48, 74, 0.9);
+  box-shadow: 0 18px 42px rgba(2, 132, 199, 0.2), 0 0 28px rgba(34, 211, 238, 0.18);
+  transform: translateY(-4px);
+}
+
+.environment-option:disabled {
+  position: relative;
+  top: auto;
+  left: auto;
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.environment-option-image {
+  display: grid;
+  width: 100%;
+  max-width: 100%;
+  height: 170px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(90, 205, 255, 0.18);
+  border-radius: 12px;
+  background: #020a19;
+  box-shadow: inset 0 0 24px rgba(34, 211, 238, 0.08);
+}
+
+.environment-option-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transition: transform 0.35s ease, filter 0.35s ease;
+}
+
+.environment-option.docker:hover .environment-option-image img,
+.environment-option.docker:focus-visible .environment-option-image img {
+  transform: scale(1.035);
+  filter: saturate(1.08) brightness(1.06);
+}
+
+.environment-option strong {
+  color: #f4fbff;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.environment-option small {
+  color: #8fa7bc;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.environment-coming-soon {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(251, 191, 36, 0.1);
+  color: #fcd34d;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+@keyframes environment-selector-arrival {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 620px) {
+  .environment-selector-backdrop {
+    padding: 14px;
+  }
+
+  .environment-selector-modal {
+    padding: 22px 16px;
+  }
+
+  .environment-selector-options {
+    grid-template-columns: 1fr;
+  }
+
+  .environment-option {
+    min-height: 190px;
+  }
+
+  .environment-option-image {
+    height: 150px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .environment-selector-modal {
+    animation: none;
+  }
+}
+
 /* One-time post-login Command Center Boot motion. */
 .home-shell.login-arrival {
   overflow: hidden;

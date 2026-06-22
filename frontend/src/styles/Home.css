@@ -8605,6 +8605,64 @@ input[type="checkbox"] {
   font-size: 24px;
 }
 
+.monitoring-container-heading {
+  min-width: 0;
+}
+
+.monitoring-heartbeat {
+  width: min(180px, 100%);
+  height: 28px;
+  margin: 0 0 4px;
+  overflow: hidden;
+}
+
+.monitoring-heartbeat svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.monitoring-heartbeat polyline,
+.monitoring-heartbeat line {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.monitoring-heartbeat.running {
+  filter: drop-shadow(0 0 5px rgba(35, 209, 139, 0.72));
+}
+
+.monitoring-heartbeat.running polyline {
+  stroke: #38d996;
+  stroke-dasharray: 42 18;
+  animation: monitoring-heartbeat-flow 1.4s linear infinite;
+}
+
+.monitoring-heartbeat.stopped {
+  filter: drop-shadow(0 0 4px rgba(248, 113, 113, 0.48));
+}
+
+.monitoring-heartbeat.stopped line {
+  stroke: #f87171;
+}
+
+@keyframes monitoring-heartbeat-flow {
+  to {
+    stroke-dashoffset: -60;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .monitoring-heartbeat.running polyline {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
+
 .monitoring-detail-header p,
 .monitoring-section-heading span {
   margin: 0;

@@ -4813,7 +4813,24 @@ function MonitoringPanel({
           ) : detail ? (
             <>
               <header className="monitoring-detail-header">
-                <div><span className="monitoring-eyebrow">Container</span><h2>{detail.name}</h2><p>{detail.image}</p></div>
+                <div className="monitoring-container-heading">
+                  <span className="monitoring-eyebrow">Container</span>
+                  <h2>{detail.name}</h2>
+                  <div
+                    className={`monitoring-heartbeat ${detail.running ? 'running' : 'stopped'}`}
+                    role="img"
+                    aria-label={detail.running ? 'Container is running' : 'Container is stopped'}
+                  >
+                    <svg viewBox="0 0 180 28" preserveAspectRatio="none" aria-hidden="true">
+                      {detail.running ? (
+                        <polyline points="0,16 28,16 36,15 42,5 50,24 58,11 66,16 96,16 104,15 110,5 118,24 126,11 134,16 180,16" />
+                      ) : (
+                        <line x1="0" y1="16" x2="180" y2="16" />
+                      )}
+                    </svg>
+                  </div>
+                  <p>{detail.image}</p>
+                </div>
                 <div className="monitoring-live-signals">
                   <span><i className={'resource-attachment-dot ' + statusClass} />{detail.status}</span>
                   <span><i className={'resource-attachment-dot ' + healthClass} />{detail.health.replace('-', ' ')}</span>

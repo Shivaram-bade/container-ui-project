@@ -77,6 +77,7 @@ class Agent(models.Model):
     ssh_key_passphrase_secret = models.TextField(blank=True)
     port = models.PositiveIntegerField(default=19541)
     password_hash = models.CharField(max_length=256)
+    token_digest = models.CharField(max_length=64, blank=True, default='')
     password_secret = models.TextField(blank=True)
     connected = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)

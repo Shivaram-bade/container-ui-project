@@ -14,6 +14,8 @@ AGENT_ID = os.environ.get('AGENT_ID', 'docker-agent')
 AGENT_TOKEN = os.environ.get('AGENT_TOKEN', '')
 AGENT_PORT = int(os.environ.get('AGENT_PORT') or 19541)
 CONTROL_SERVER_URL = os.environ.get('CONTROL_SERVER_URL', '').rstrip('/')
+HEARTBEAT_INTERVAL_SECONDS = 15
+IDLE_COMMAND_POLL_SECONDS = 2
 
 
 def log(message):
@@ -286,14 +288,14 @@ def main():
     last_deployment_poll = 0
     while True:
         now = time.time()
-        if now - last_heartbeat >= 5:
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
             heartbeat()
             last_heartbeat = now
         handled = poll_command()
         if now - last_deployment_poll >= 30:
             handled = poll_deployment() or handled
             last_deployment_poll = now
-        time.sleep(0.1 if handled else 0.25)
+        time.sleep(0.1 if handled else IDLE_COMMAND_POLL_SECONDS)
 
 
 if __name__ == '__main__':

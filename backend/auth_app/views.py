@@ -11,6 +11,8 @@ import jwt
 import json
 import base64
 import binascii
+import hashlib
+import hmac
 from datetime import datetime, timedelta
 from django.conf import settings
 from django.core import signing
@@ -587,6 +589,8 @@ COMMAND_URL = os.environ.get('VITEL_AGENT_COMMAND_URL', '')
 COMMAND_RESULT_URL = os.environ.get('VITEL_AGENT_COMMAND_RESULT_URL', '')
 DEPLOYMENT_POLL_URL = os.environ.get('VITEL_AGENT_DEPLOYMENT_POLL_URL', '')
 DEPLOYMENT_RESULT_URL = os.environ.get('VITEL_AGENT_DEPLOYMENT_RESULT_URL', '')
+HEARTBEAT_INTERVAL_SECONDS = 15
+IDLE_COMMAND_POLL_SECONDS = 2
 
 
 def log(message):
@@ -819,14 +823,14 @@ def main():
     last_heartbeat = time.time()
     while True:
         now = time.time()
-        if now - last_heartbeat >= 5:
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
             heartbeat()
             last_heartbeat = now
         handled = poll_command()
         if now - last_deployment_poll >= 30:
             handled = poll_deployment() or handled
             last_deployment_poll = now
-        time.sleep(0.1 if handled else 0.25)
+        time.sleep(0.1 if handled else IDLE_COMMAND_POLL_SECONDS)
 
 
 if __name__ == '__main__':
@@ -1651,6 +1655,26 @@ def get_agent_command_display(command):
     return normalized
 
 
+def get_agent_token_digest(token):
+    return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+
+def verify_agent_token(agent, token):
+    """Verify random agent tokens cheaply while retaining legacy compatibility."""
+    candidate_digest = get_agent_token_digest(token)
+    if agent.token_digest:
+        return hmac.compare_digest(agent.token_digest, candidate_digest)
+
+    # Existing agents have only a PBKDF2 hash. Upgrade after one successful
+    # request so subsequent command polls use a constant-time digest check.
+    if not check_password(token, agent.password_hash):
+        return False
+
+    Agent.objects.filter(pk=agent.pk, token_digest='').update(token_digest=candidate_digest)
+    agent.token_digest = candidate_digest
+    return True
+
+
 def authenticate_agent_request_payload(request):
     name = str(request.data.get('name', '') or '').strip()
     password = str(request.data.get('password', '') or '').strip()
@@ -1664,7 +1688,7 @@ def authenticate_agent_request_payload(request):
 
     agent_query = Agent.objects.filter(id=agent_id, is_deleted=False) if agent_id else Agent.objects.filter(name=name, is_deleted=False)
     agent = agent_query.first()
-    if not agent or not check_password(password, agent.password_hash):
+    if not agent or not verify_agent_token(agent, password):
         return None, password, Response({
             'success': False,
             'error': 'Invalid agent credentials.',
@@ -4613,6 +4637,7 @@ def agents(request):
             'ssh_key_passphrase_secret': existing_agent.ssh_key_passphrase_secret,
             'port': existing_agent.port,
             'password_hash': existing_agent.password_hash,
+            'token_digest': existing_agent.token_digest,
             'password_secret': existing_agent.password_secret,
             'connected': existing_agent.connected,
             'hostname': existing_agent.hostname,
@@ -4633,6 +4658,7 @@ def agents(request):
             'ssh_key_passphrase_secret': '',
             'port': port,
             'password_hash': make_password(temporary_secret),
+            'token_digest': get_agent_token_digest(temporary_secret),
             'password_secret': encode_agent_secret(temporary_secret),
             'connected': False,
             'is_deleted': False,
@@ -4642,8 +4668,9 @@ def agents(request):
     )
     agent_secret = build_docker_agent_token(agent)
     agent.password_hash = make_password(agent_secret)
+    agent.token_digest = get_agent_token_digest(agent_secret)
     agent.password_secret = encode_agent_secret(agent_secret)
-    agent.save(update_fields=['password_hash', 'password_secret', 'updated_at'])
+    agent.save(update_fields=['password_hash', 'token_digest', 'password_secret', 'updated_at'])
 
     image_result = ensure_agent_image_in_registry(request)
     if not image_result.get('success'):
@@ -4726,7 +4753,7 @@ def agent_heartbeat(request):
 
     agent_query = Agent.objects.filter(id=agent_id, is_deleted=False) if agent_id else Agent.objects.filter(name=name, is_deleted=False)
     agent = agent_query.first()
-    if not agent or not check_password(password, agent.password_hash):
+    if not agent or not verify_agent_token(agent, password):
         return Response({
             'error': 'Invalid agent credentials.',
         }, status=status.HTTP_403_FORBIDDEN)

@@ -57,8 +57,14 @@ CMD ["sh", "-c", "\
 if [ -n \"$AGENT_ID\" ] && [ -n \"$AGENT_TOKEN\" ]; then \
   python -m auth_app.docker_agent; \
 else \
-  python manage.py makemigrations && \
   python manage.py migrate && \
-  python manage.py runserver 0.0.0.0:8000; \
+  gunicorn vitel_project.wsgi:application \
+    --bind 0.0.0.0:8000 \
+    --workers 1 \
+    --threads 4 \
+    --worker-class gthread \
+    --timeout 1800 \
+    --access-logfile - \
+    --error-logfile -; \
 fi \
 "]

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
 import '../styles/Login.css';
@@ -37,6 +37,8 @@ const shipManifests = [
   { id: 'bluefin', className: 'ship-primary', labels: ['AUTH', 'API', 'POSTGRES', 'REDIS', 'NGINX'] },
   { id: 'sentinel', className: 'ship-secondary', labels: ['WORKER', 'QUEUE', 'AI', 'SEARCH'] },
 ];
+
+const LOGIN_REVEAL_DELAY_MS = 5000;
 
 function InfrastructureScene() {
   return (
@@ -306,6 +308,7 @@ function PasswordVisibilityIcon({ visible }) {
 
 export default function Login() {
   const navigate = useNavigate();
+  const [showLoginCard, setShowLoginCard] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -315,6 +318,14 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    const revealTimer = window.setTimeout(() => {
+      setShowLoginCard(true);
+    }, LOGIN_REVEAL_DELAY_MS);
+
+    return () => window.clearTimeout(revealTimer);
+  }, []);
 
   const getErrorMessage = (err) => {
     const data = err.response?.data;
@@ -405,6 +416,13 @@ export default function Login() {
     <main className="login-container">
       <InfrastructureScene />
 
+      {!showLoginCard && (
+        <p className="login-splash-status" role="status" aria-live="polite">
+          Loading Container UI
+        </p>
+      )}
+
+      {showLoginCard && (
       <section className="login-card" aria-label="Container UI authentication">
         <div className="login-card-glow" />
         <div className="login-brand">
@@ -491,6 +509,7 @@ export default function Login() {
           )}
         </p>
       </section>
+      )}
     </main>
   );
 }

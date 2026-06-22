@@ -47,7 +47,7 @@ from .serializers import (
 from .deployment_service import create_deployment_job, mark_deployment_job_complete, mark_deployment_job_running
 from .registry_service import (
     RegistryClientError, build_registry_reference, get_default_registry_push_host,
-    sync_registry_images, list_registry_tags,
+    sync_registry_images, list_registry_tags, registry_manifest_exists,
 )
 import pty
 import fcntl
@@ -62,6 +62,8 @@ DEPLOY_JOBS_LOCK = threading.Lock()
 
 CONTAINER_SHELLS = {}
 CONTAINER_SHELLS_LOCK = threading.Lock()
+
+AGENT_IMAGE_REGISTRY_LOCK = threading.Lock()
 
 RECYCLED_CONTAINER_SNAPSHOT_KEY = '_vitel_recycle_snapshot'
 VOLUME_HELPER_IMAGE = 'alpine:latest'
@@ -2281,37 +2283,112 @@ def get_agent_registry_pull_reference(request):
     )
 
 
-def ensure_agent_image_in_registry(request):
-    local_result = ensure_local_agent_image()
-    if not local_result.get('success'):
-        return local_result
+def cleanup_local_agent_image_tags(push_reference, keep_local_image=False):
+    cleanup_outputs = []
+    references = [push_reference]
+    if not keep_local_image:
+        references.append(LOCAL_AGENT_IMAGE)
+    for image_reference in references:
+        cleanup_result = run_docker_command(['docker', 'image', 'rm', image_reference], timeout=60)
+        if cleanup_result.get('output'):
+            cleanup_outputs.append(cleanup_result['output'])
+    return cleanup_outputs
 
+
+def ensure_agent_image_in_registry(request, keep_local_image=False):
+    repository = get_agent_registry_repository()
+    tag = get_agent_registry_tag()
+    pull_reference = get_agent_registry_pull_reference(request)
     push_reference = get_agent_registry_push_reference()
-    tag_result = run_docker_command(['docker', 'tag', LOCAL_AGENT_IMAGE, push_reference], timeout=60)
-    if not tag_result.get('success'):
-        return {
-            **tag_result,
-            'error': f'Unable to tag {LOCAL_AGENT_IMAGE} for registry push.',
-        }
 
-    push_result = run_docker_command(['docker', 'push', push_reference], timeout=900)
-    if not push_result.get('success'):
-        return {
-            **push_result,
-            'error': 'Unable to push the agent image to the local registry. Make sure vitel-registry is running on port 5000.',
-        }
+    with AGENT_IMAGE_REGISTRY_LOCK:
+        try:
+            if registry_manifest_exists(repository, tag):
+                local_output = ''
+                if keep_local_image:
+                    local_result = ensure_local_agent_image()
+                    if not local_result.get('success'):
+                        return local_result
+                    local_output = local_result.get('output', '')
+                cleanup_outputs = cleanup_local_agent_image_tags(
+                    push_reference,
+                    keep_local_image=keep_local_image,
+                )
+                return {
+                    'success': True,
+                    'return_code': 0,
+                    'command': 'registry manifest check',
+                    'output': '\n'.join([
+                        local_output,
+                        *cleanup_outputs,
+                        f'Using existing agent image from registry: {pull_reference}',
+                    ]).strip(),
+                    'registry_reused': True,
+                }
+        except RegistryClientError as exc:
+            return {
+                'success': False,
+                'return_code': None,
+                'command': 'registry manifest check',
+                'output': str(exc),
+                'error': 'Unable to check the local registry for the agent image.',
+            }
 
-    return {
-        'success': True,
-        'return_code': push_result.get('return_code'),
-        'command': f'docker tag {LOCAL_AGENT_IMAGE} {push_reference} && docker push {push_reference}',
-        'output': '\n'.join([
-            local_result.get('output', ''),
-            tag_result.get('output', ''),
-            push_result.get('output', ''),
-            f'Agent image is available from {get_agent_registry_pull_reference(request)}',
-        ]).strip(),
-    }
+        local_result = ensure_local_agent_image()
+        if not local_result.get('success'):
+            return local_result
+
+        tag_result = run_docker_command(['docker', 'tag', LOCAL_AGENT_IMAGE, push_reference], timeout=60)
+        if not tag_result.get('success'):
+            return {
+                **tag_result,
+                'error': f'Unable to tag {LOCAL_AGENT_IMAGE} for registry push.',
+            }
+
+        push_result = run_docker_command(['docker', 'push', push_reference], timeout=900)
+        if not push_result.get('success'):
+            return {
+                **push_result,
+                'error': 'Unable to push the agent image to the local registry. Make sure vitel-registry is running on port 5000.',
+            }
+
+        try:
+            image_stored = registry_manifest_exists(repository, tag)
+        except RegistryClientError as exc:
+            return {
+                'success': False,
+                'return_code': None,
+                'command': 'registry manifest verification',
+                'output': '\n'.join([push_result.get('output', ''), str(exc)]).strip(),
+                'error': 'The agent image was pushed, but its registry manifest could not be verified. Local tags were kept.',
+            }
+        if not image_stored:
+            return {
+                'success': False,
+                'return_code': None,
+                'command': 'registry manifest verification',
+                'output': push_result.get('output', ''),
+                'error': 'The registry did not contain the agent image after the push. Local tags were kept.',
+            }
+
+        cleanup_outputs = cleanup_local_agent_image_tags(
+            push_reference,
+            keep_local_image=keep_local_image,
+        )
+
+        return {
+            'success': True,
+            'return_code': push_result.get('return_code'),
+            'command': f'docker tag {LOCAL_AGENT_IMAGE} {push_reference} && docker push {push_reference}',
+            'output': '\n'.join([
+                local_result.get('output', ''),
+                tag_result.get('output', ''),
+                push_result.get('output', ''),
+                *cleanup_outputs,
+                f'Agent image was stored in the registry and temporary local tags were removed: {pull_reference}',
+            ]).strip(),
+            'registry_reused': False,
+        }
 
 def get_manual_agent_bind_host(request, agent):
     if is_local_agent_target(request, agent.server_ip):
@@ -4439,7 +4516,10 @@ def agents(request):
         agent.connected = False
         agent.hostname = ''
         agent.save(update_fields=['connected', 'hostname', 'updated_at'])
-        image_result = ensure_agent_image_in_registry(request)
+        image_result = ensure_agent_image_in_registry(
+            request,
+            keep_local_image=is_local_agent_target(request, agent.server_ip),
+        )
         if not image_result.get('success'):
             return Response({
                 **image_result,

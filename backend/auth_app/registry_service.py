@@ -78,6 +78,34 @@ def list_registry_tags(repository_name, registry_url=None):
     return data.get('tags') or []
 
 
+def registry_manifest_exists(repository_name, tag, registry_url=None):
+    encoded_name = quote(repository_name, safe='/')
+    encoded_tag = quote(tag, safe='')
+    url = f'{(registry_url or get_default_registry_url()).rstrip("/")}/v2/{encoded_name}/manifests/{encoded_tag}'
+    request = urllib_request.Request(
+        url,
+        headers={
+            'Accept': ', '.join([
+                'application/vnd.oci.image.index.v1+json',
+                'application/vnd.oci.image.manifest.v1+json',
+                'application/vnd.docker.distribution.manifest.list.v2+json',
+                'application/vnd.docker.distribution.manifest.v2+json',
+            ]),
+        },
+        method='HEAD',
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=20) as response:
+            return 200 <= response.status < 300
+    except urllib_error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise RegistryClientError(detail or str(exc)) from exc
+    except (urllib_error.URLError, TimeoutError, OSError) as exc:
+        raise RegistryClientError(str(exc)) from exc
+
+
 def sync_registry_images(owner=None, registry_url=None, pull_host=None):
     registry_url = registry_url or get_default_registry_url()
     pull_host = pull_host or get_default_registry_push_host()

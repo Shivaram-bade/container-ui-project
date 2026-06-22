@@ -8914,8 +8914,29 @@ function AgentPanel({
     return lines.slice(startIndex, endIndex).join('\n').trim();
   };
 
-  const handleCopyAgentOutput = async (value, key, copyCommandsOnly = false) => {
-    const text = copyCommandsOnly ? getAgentSetupCommandText(value) : String(value || '').trim();
+  const getAgentDockerRunCommandText = (value) => {
+    const originalText = String(value || '').trim();
+    const lines = originalText.replace(/\r\n/g, '\n').split('\n');
+    const startIndex = lines.findIndex((line) => line.trim() === 'docker run -d \\');
+    if (startIndex === -1) return originalText;
+
+    let endIndex = startIndex + 1;
+    for (; endIndex < lines.length; endIndex += 1) {
+      if (!lines[endIndex].trim().endsWith('\\')) {
+        endIndex += 1;
+        break;
+      }
+    }
+
+    return lines.slice(startIndex, endIndex).join('\n').trim();
+  };
+
+  const handleCopyAgentOutput = async (value, key, copyMode = 'all') => {
+    const text = copyMode === 'setup'
+      ? getAgentSetupCommandText(value)
+      : copyMode === 'docker-run'
+        ? getAgentDockerRunCommandText(value)
+        : String(value || '').trim();
     if (!text) return;
 
     try {
@@ -9307,7 +9328,7 @@ function AgentPanel({
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      handleCopyAgentOutput(agentCreateOutput, 'create', true);
+                      handleCopyAgentOutput(agentCreateOutput, 'create', 'setup');
                     }}
                     onPointerDown={(event) => event.stopPropagation()}
                     disabled={!agentCreateOutput}
@@ -9347,7 +9368,7 @@ function AgentPanel({
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      handleCopyAgentOutput(agentDeleteOutput, 'delete');
+                      handleCopyAgentOutput(agentDeleteOutput, 'delete', 'docker-run');
                     }}
                     onPointerDown={(event) => event.stopPropagation()}
                     disabled={!agentDeleteOutput}

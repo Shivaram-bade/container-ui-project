@@ -381,6 +381,7 @@ export default function Login() {
         setTimeout(() => {
           sessionStorage.setItem('vitel-login-entrance', 'pending');
           sessionStorage.setItem('vitel-environment-selector', 'pending');
+          sessionStorage.removeItem('vitel-selected-environment');
           navigate('/home', { replace: true });
         }, 800);
       } else {

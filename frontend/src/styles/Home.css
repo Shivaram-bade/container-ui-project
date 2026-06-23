@@ -9695,7 +9695,9 @@ input[type="checkbox"] {
 }
 
 .environment-option.docker:hover,
-.environment-option.docker:focus-visible {
+.environment-option.docker:focus-visible,
+.environment-option.kubernetes:hover,
+.environment-option.kubernetes:focus-visible {
   outline: none;
   border-color: rgba(56, 189, 248, 0.76);
   background: rgba(14, 48, 74, 0.9);
@@ -9734,7 +9736,9 @@ input[type="checkbox"] {
 }
 
 .environment-option.docker:hover .environment-option-image img,
-.environment-option.docker:focus-visible .environment-option-image img {
+.environment-option.docker:focus-visible .environment-option-image img,
+.environment-option.kubernetes:hover .environment-option-image img,
+.environment-option.kubernetes:focus-visible .environment-option-image img {
   transform: scale(1.035);
   filter: saturate(1.08) brightness(1.06);
 }
@@ -9763,6 +9767,13 @@ input[type="checkbox"] {
   font-size: 10px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.kubernetes-placeholder-panel {
+  min-height: 420px;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(79, 141, 247, 0.05), transparent 38%),
+    rgba(8, 20, 34, 0.72) !important;
 }
 
 @keyframes environment-selector-arrival {

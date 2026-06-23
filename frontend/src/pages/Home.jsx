@@ -129,16 +129,33 @@ const agentActions = [
   },
 ];
 
+const kubernetesActions = [
+  { id: 'k8s-pod', icon: 'PO', path: '/k8s/pod', title: 'Pod' },
+  { id: 'k8s-namespace', icon: 'NS', path: '/k8s/namespace', title: 'Namespace' },
+  { id: 'k8s-deployment', icon: 'DP', path: '/k8s/deployment', title: 'Deployment' },
+  { id: 'k8s-statefulset', icon: 'SS', path: '/k8s/statefulset', title: 'StatefulSet' },
+  { id: 'k8s-service', icon: 'SV', path: '/k8s/service', title: 'Service' },
+  { id: 'k8s-resources', icon: 'RS', path: '/k8s/resources', title: 'Resources' },
+  { id: 'k8s-images-registry', icon: 'IR', path: '/k8s/images-registry', title: 'Images Registry' },
+  { id: 'k8s-agent', icon: 'KA', path: '/k8s/agent', title: 'K8s-Agent' },
+  { id: 'k8s-autoscale', icon: 'AS', path: '/k8s/autoscale', title: 'Autoscale' },
+  { id: 'k8s-auth', icon: 'AU', path: '/k8s/auth', title: 'K8s-Auth' },
+  { id: 'k8s-configmap', icon: 'CM', path: '/k8s/configmap', title: 'ConfigMap' },
+  { id: 'k8s-secrets', icon: 'SC', path: '/k8s/secrets', title: 'Secrets' },
+  { id: 'k8s-pv-pvc', icon: 'PV', path: '/k8s/pv-pvc', title: 'PV-PVC' },
+];
+
 const BUILD_JOB_STORAGE_KEY = 'vitel-active-build-job-id';
 const DEPLOY_JOB_STORAGE_KEY = 'vitel-active-deploy-job-id';
 const LOGIN_ENTRANCE_STORAGE_KEY = 'vitel-login-entrance';
 const ENVIRONMENT_SELECTOR_STORAGE_KEY = 'vitel-environment-selector';
+const SELECTED_ENVIRONMENT_STORAGE_KEY = 'vitel-selected-environment';
 const AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json';
 const AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json';
 const LOCAL_SERVER_ID = 'local';
 const NOTIFICATION_LIMIT = 150;
 const buildImageAction = homeActions.find((action) => action.id === 'image');
-const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, notificationsAction, rbacAction, userProfileAction, ...agentActions];
+const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, notificationsAction, rbacAction, userProfileAction, ...agentActions, ...kubernetesActions];
 const DashboardBackContext = createContext(null);
 
 const getNotificationStorageKey = (user) => `vitel-notifications:${user?.id || user?.username || 'default'}`;
@@ -384,6 +401,11 @@ export default function Home() {
   const [environmentSelectorOpen, setEnvironmentSelectorOpen] = useState(() => (
     typeof window !== 'undefined'
     && sessionStorage.getItem(ENVIRONMENT_SELECTOR_STORAGE_KEY) === 'pending'
+  ));
+  const [selectedEnvironment, setSelectedEnvironment] = useState(() => (
+    typeof window !== 'undefined'
+      ? sessionStorage.getItem(SELECTED_ENVIRONMENT_STORAGE_KEY) || 'docker'
+      : 'docker'
   ));
   const [activeAction, setActiveAction] = useState(() => getActionForPath(location.pathname));
   const [manualMenuOpen, setManualMenuOpen] = useState(false);
@@ -1559,12 +1581,27 @@ export default function Home() {
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');
     sessionStorage.removeItem(ENVIRONMENT_SELECTOR_STORAGE_KEY);
+    sessionStorage.removeItem(SELECTED_ENVIRONMENT_STORAGE_KEY);
     window.location.href = '/';
   };
 
   const handleSelectDockerEnvironment = () => {
+    sessionStorage.setItem(SELECTED_ENVIRONMENT_STORAGE_KEY, 'docker');
     sessionStorage.removeItem(ENVIRONMENT_SELECTOR_STORAGE_KEY);
+    setSelectedEnvironment('docker');
     setEnvironmentSelectorOpen(false);
+    setActiveAction(dashboardAction);
+    navigate(dashboardAction.path, { replace: true });
+  };
+
+  const handleSelectKubernetesEnvironment = () => {
+    const firstAction = kubernetesActions[0];
+    sessionStorage.setItem(SELECTED_ENVIRONMENT_STORAGE_KEY, 'kubernetes');
+    sessionStorage.removeItem(ENVIRONMENT_SELECTOR_STORAGE_KEY);
+    setSelectedEnvironment('kubernetes');
+    setEnvironmentSelectorOpen(false);
+    setActiveAction(firstAction);
+    navigate(firstAction.path, { replace: true });
   };
 
   const handleCreateContainer = async (event) => {
@@ -3645,11 +3682,19 @@ export default function Home() {
       <aside className="home-sidebar">
         <div className="home-sidebar-title">
           <span className="home-brand-mark" aria-hidden="true"><i /><i /><i /></span>
-          <strong>Container Console</strong>
-          <small>Orchestration control plane</small>
+          <strong>{selectedEnvironment === 'kubernetes' ? 'Kubernetes Console' : 'Container Console'}</strong>
+          <small>{selectedEnvironment === 'kubernetes' ? 'Kubernetes environment' : 'Orchestration control plane'}</small>
         </div>
 
         <nav className="home-nav" aria-label="Application navigation">
+          {selectedEnvironment === 'kubernetes' ? (
+            kubernetesActions.map((action) => renderNavItem(
+              action,
+              activeAction.id === action.id,
+              () => handleActionSelect(action)
+            ))
+          ) : (
+          <>
           {renderNavItem(
             dashboardAction,
             isDashboardActive,
@@ -3769,6 +3814,8 @@ export default function Home() {
             handleOpenNotifications,
             unreadNotificationCount > 0
           )}
+          </>
+          )}
         </nav>
 
         <button type="button" className="home-logout" onClick={handleLogout}>
@@ -3783,7 +3830,7 @@ export default function Home() {
             <p>{activeAction.description}</p>
           </div>
           <div className="home-header-actions">
-            {canViewNotifications ? <div className="notification-bell-wrap">
+            {selectedEnvironment === 'docker' && canViewNotifications ? <div className="notification-bell-wrap">
               <button
                 type="button"
                 className={`notification-bell-button ${bellOpen ? 'active' : ''}`}
@@ -3804,7 +3851,7 @@ export default function Home() {
                 />
               ) : null}
             </div> : null}
-            <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={!canSeeAction(userProfileAction)}>
+            <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={selectedEnvironment === 'kubernetes' || !canSeeAction(userProfileAction)}>
               <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
               <span className="home-user-copy"><span></span>
               <strong>{user?.name || user?.username || 'Signed-in user'}</strong>
@@ -3813,6 +3860,9 @@ export default function Home() {
           </div>
         </header>
 
+        {selectedEnvironment === 'kubernetes' ? (
+          <KubernetesPlaceholderPanel action={activeAction} />
+        ) : (
         <DashboardBackContext.Provider value={isDashboardActive || isNotificationsActive ? null : handleBackToDashboard}>
           {isDashboardActive ? (
           <DashboardPanel
@@ -4408,8 +4458,9 @@ export default function Home() {
           </section>
           )}
         </DashboardBackContext.Provider>
+        )}
 
-        {canViewNotifications && activeToast ? (
+        {selectedEnvironment === 'docker' && canViewNotifications && activeToast ? (
           <GlobalNotificationToast
             notification={activeToast}
             onClose={() => setActiveToast(null)}
@@ -4417,13 +4468,16 @@ export default function Home() {
         ) : null}
       </main>
       {environmentSelectorOpen ? (
-        <EnvironmentSelectionModal onSelectDocker={handleSelectDockerEnvironment} />
+        <EnvironmentSelectionModal
+          onSelectDocker={handleSelectDockerEnvironment}
+          onSelectKubernetes={handleSelectKubernetesEnvironment}
+        />
       ) : null}
     </div>
   );
 }
 
-function EnvironmentSelectionModal({ onSelectDocker }) {
+function EnvironmentSelectionModal({ onSelectDocker, onSelectKubernetes }) {
   return createPortal(
     <div className="environment-selector-backdrop" role="presentation">
       <section
@@ -4446,8 +4500,7 @@ function EnvironmentSelectionModal({ onSelectDocker }) {
             <small>Docker environment</small>
           </button>
 
-          <button type="button" className="environment-option kubernetes" disabled aria-disabled="true">
-            <span className="environment-coming-soon">Coming soon</span>
+          <button type="button" className="environment-option kubernetes" onClick={onSelectKubernetes}>
             <span className="environment-option-image" aria-hidden="true">
               <img src={kubernetesEnvironmentImage} alt="" />
             </span>
@@ -4458,6 +4511,12 @@ function EnvironmentSelectionModal({ onSelectDocker }) {
       </section>
     </div>,
     document.body
+  );
+}
+
+function KubernetesPlaceholderPanel({ action }) {
+  return (
+    <section className="home-panel kubernetes-placeholder-panel" aria-label={`${action.title} placeholder`} />
   );
 }
 

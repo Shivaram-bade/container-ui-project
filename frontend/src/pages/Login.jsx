@@ -38,7 +38,7 @@ const shipManifests = [
   { id: 'sentinel', className: 'ship-secondary', labels: ['WORKER', 'QUEUE', 'AI', 'SEARCH'] },
 ];
 
-const LOGIN_REVEAL_DELAY_MS = 5000;
+const LOGIN_REVEAL_DELAY_MS = 3000;
 
 function InfrastructureScene() {
   return (

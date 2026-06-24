@@ -154,9 +154,35 @@ const AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json';
 const AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json';
 const LOCAL_SERVER_ID = 'local';
 const NOTIFICATION_LIMIT = 150;
+const KUBERNETES_NAMESPACE_STORAGE_KEY = 'vitel-k8s-namespaces';
+const KUBERNETES_NAMESPACE_EVENT = 'vitel-k8s-namespaces-updated';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
 const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, notificationsAction, rbacAction, userProfileAction, ...agentActions, ...kubernetesActions];
 const DashboardBackContext = createContext(null);
+
+const readStoredKubernetesNamespaces = () => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(KUBERNETES_NAMESPACE_STORAGE_KEY) || '[]');
+    const names = Array.isArray(value)
+      ? value.map((name) => String(name).trim()).filter(Boolean)
+      : [];
+    return ['default', ...Array.from(new Set(names.filter((name) => name !== 'default')))];
+  } catch (error) {
+    return ['default'];
+  }
+};
+
+const saveKubernetesNamespace = (namespaceName) => {
+  const name = String(namespaceName || '').trim();
+  if (!name || name === 'default') return;
+  const next = Array.from(new Set([...readStoredKubernetesNamespaces(), name].filter((value) => value !== 'default')));
+  try {
+    sessionStorage.setItem(KUBERNETES_NAMESPACE_STORAGE_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent(KUBERNETES_NAMESPACE_EVENT, { detail: { namespaces: ['default', ...next] } }));
+  } catch (error) {
+    // Ignore browser storage failures; the command preview can still be generated.
+  }
+};
 
 const getNotificationStorageKey = (user) => `vitel-notifications:${user?.id || user?.username || 'default'}`;
 
@@ -4515,8 +4541,563 @@ function EnvironmentSelectionModal({ onSelectDocker, onSelectKubernetes }) {
 }
 
 function KubernetesPlaceholderPanel({ action }) {
+  if (action.id === 'k8s-pod') {
+    return <KubernetesPodCommandPanel />;
+  }
+  if (action.id === 'k8s-namespace') {
+    return <KubernetesNamespaceCommandPanel />;
+  }
+  if (action.id === 'k8s-service') {
+    return <KubernetesServiceCommandPanel />;
+  }
+  if (action.id === 'k8s-configmap') {
+    return <KubernetesLiteralCommandPanel resourceType="configmap" />;
+  }
+  if (action.id === 'k8s-secrets') {
+    return <KubernetesLiteralCommandPanel resourceType="secret" />;
+  }
+
   return (
     <section className="home-panel kubernetes-placeholder-panel" aria-label={`${action.title} placeholder`} />
+  );
+}
+
+function KubernetesPodCommandPanel() {
+  const [resourceName, setResourceName] = useState('');
+  const [imageName, setImageName] = useState('');
+  const [registryMode, setRegistryMode] = useState('docker-hub');
+  const [customRegistry, setCustomRegistry] = useState('');
+  const [commandType, setCommandType] = useState('run');
+  const [operationType, setOperationType] = useState('pod');
+  const [namespace, setNamespace] = useState('default');
+  const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [outputVisible, setOutputVisible] = useState(false);
+  const [output, setOutput] = useState('');
+
+  const normalizedName = resourceName.trim();
+  const normalizedImage = imageName.trim();
+  const commandName = normalizedName || '<name>';
+  const commandImage = normalizedImage || '<image>';
+  const selectedOperation = commandType === 'run' ? 'pod' : operationType;
+  const registryPrefix = registryMode === 'local'
+    ? 'localhost:5000'
+    : registryMode === 'custom'
+      ? customRegistry.trim().replace(/\/+$/, '')
+      : '';
+  const resolvedImage = registryPrefix ? `${registryPrefix}/${commandImage.replace(/^\/+/, '')}` : commandImage;
+  const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
+  const generatedCommand = commandType === 'run'
+    ? `kubectl run ${commandName} --image=${resolvedImage}${namespaceSegment}`
+    : `kubectl create ${selectedOperation} ${commandName} --image=${resolvedImage}${namespaceSegment}`;
+  const canCreateCommand = Boolean(normalizedName && normalizedImage && (registryMode !== 'custom' || registryPrefix));
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+  }, []);
+
+  const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
+
+  const handleCommandTypeChange = (value) => {
+    setCommandType(value);
+    if (value === 'run') {
+      setOperationType('pod');
+    }
+  };
+
+  const handleCreateCommand = () => {
+    const registryLabel = registryMode === 'docker-hub'
+      ? 'Docker Hub'
+      : registryMode === 'local'
+        ? 'Local registry'
+        : registryPrefix;
+    setOutput([
+      '$ ' + generatedCommand,
+      `Command: ${commandType}`,
+      `Operation type: ${selectedOperation}`,
+      `Namespace: ${namespace}`,
+      `Docker registry: ${registryLabel}`,
+      'Status: command preview generated. Kubernetes execution is not connected yet.',
+    ].join('\n'));
+    setOutputVisible(true);
+  };
+
+  return (
+    <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes pod command builder">
+      <div className="k8s-command-heading">
+        <div>
+          <h2>Pod Command Builder</h2>
+          <p>Create a kubectl command preview for Pod or Deployment operations. Docker Hub is selected by default.</p>
+        </div>
+        <div className="k8s-command-preview-card">
+          <span>Generated command</span>
+          <code>{generatedCommand}</code>
+        </div>
+      </div>
+
+      <div className="k8s-command-form">
+        <label>
+          <span>Name</span>
+          <input
+            type="text"
+            value={resourceName}
+            onChange={(event) => setResourceName(event.target.value)}
+            placeholder="nginx"
+          />
+        </label>
+
+        <label>
+          <span>Image name</span>
+          <input
+            type="text"
+            value={imageName}
+            onChange={(event) => setImageName(event.target.value)}
+            placeholder="nginx:latest"
+          />
+        </label>
+
+        <label>
+          <span>Docker registry</span>
+          <select value={registryMode} onChange={(event) => setRegistryMode(event.target.value)}>
+            <option value="docker-hub">Docker Hub default</option>
+          </select>
+          <small>Default uses Docker Hub, so no registry prefix is added.</small>
+        </label>
+
+        <label>
+          <span>Namespace</span>
+          <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+            {namespaces.map((namespaceName) => (
+              <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+            ))}
+          </select>
+          <small>Namespaces created from the Namespace tab appear here.</small>
+        </label>
+
+        {registryMode === 'custom' ? (
+          <label>
+            <span>Custom registry URL</span>
+            <input
+              type="text"
+              value={customRegistry}
+              onChange={(event) => setCustomRegistry(event.target.value)}
+              placeholder="registry.example.com"
+            />
+          </label>
+        ) : null}
+
+        <label>
+          <span>Command</span>
+          <select value={commandType} onChange={(event) => handleCommandTypeChange(event.target.value)}>
+            <option value="run">run</option>
+            <option value="create">create</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Operation type</span>
+          <select
+            value={selectedOperation}
+            onChange={(event) => setOperationType(event.target.value)}
+            disabled={commandType === 'run'}
+          >
+            <option value="pod">pod</option>
+            <option value="deployment">deployment</option>
+          </select>
+          {commandType === 'run' ? <small>Run command uses pod operation by default.</small> : null}
+        </label>
+      </div>
+
+      <div className="k8s-command-actions">
+        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+          Create Pod
+        </button>
+        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+          {outputVisible ? 'Hide Output View' : 'Output View'}
+        </button>
+      </div>
+
+      {outputVisible ? (
+        <div className="k8s-command-output">
+          <div>
+            <strong>Output View</strong>
+            <span>Preview only</span>
+          </div>
+          <pre>{output || ['$ ' + generatedCommand, 'Click Create to generate output.'].join('\n')}</pre>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KubernetesNamespaceCommandPanel() {
+  const [namespaceName, setNamespaceName] = useState('');
+  const [operationType, setOperationType] = useState('create');
+  const [outputVisible, setOutputVisible] = useState(false);
+  const [output, setOutput] = useState('');
+
+  const normalizedNamespace = namespaceName.trim();
+  const commandNamespace = normalizedNamespace || '<namespace>';
+  const generatedCommand = `kubectl ${operationType} namespace ${commandNamespace}`;
+  const canCreateCommand = Boolean(normalizedNamespace);
+
+  const handleCreateCommand = () => {
+    saveKubernetesNamespace(normalizedNamespace);
+    setOutput([
+      '$ ' + generatedCommand,
+      `Operation: ${operationType}`,
+      `Namespace: ${normalizedNamespace}`,
+      'Status: command preview generated. Kubernetes execution is not connected yet.',
+    ].join('\n'));
+    setOutputVisible(true);
+  };
+
+  return (
+    <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes namespace command builder">
+      <div className="k8s-command-heading">
+        <div>
+          <h2>Namespace Command Builder</h2>
+          <p>Create a kubectl namespace command preview. Enter a namespace name and review the output before execution is connected.</p>
+        </div>
+        <div className="k8s-command-preview-card">
+          <span>Generated command</span>
+          <code>{generatedCommand}</code>
+        </div>
+      </div>
+
+      <div className="k8s-command-form">
+        <label>
+          <span>Namespace name</span>
+          <input
+            type="text"
+            value={namespaceName}
+            onChange={(event) => setNamespaceName(event.target.value)}
+            placeholder="app"
+          />
+        </label>
+
+        <label>
+          <span>Operation</span>
+          <select value={operationType} onChange={(event) => setOperationType(event.target.value)}>
+            <option value="create">create</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="k8s-command-actions">
+        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+          Create Namespace
+        </button>
+        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+          {outputVisible ? 'Hide Output View' : 'Output View'}
+        </button>
+      </div>
+
+      {outputVisible ? (
+        <div className="k8s-command-output">
+          <div>
+            <strong>Output View</strong>
+            <span>Preview only</span>
+          </div>
+          <pre>{output || ['$ ' + generatedCommand, 'Click Create to generate output.'].join('\n')}</pre>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KubernetesServiceCommandPanel() {
+  const [serviceName, setServiceName] = useState('');
+  const [operationType, setOperationType] = useState('pod');
+  const [serviceType, setServiceType] = useState('ClusterIP');
+  const [port, setPort] = useState('');
+  const [namespace, setNamespace] = useState('default');
+  const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [outputVisible, setOutputVisible] = useState(false);
+  const [output, setOutput] = useState('');
+
+  const normalizedServiceName = serviceName.trim();
+  const normalizedPort = port.trim();
+  const commandServiceName = normalizedServiceName || '<name>';
+  const commandPort = normalizedPort || '<port>';
+  const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
+  const generatedCommand = `kubectl expose ${operationType} ${commandServiceName} --port=${commandPort} --type=${serviceType}${namespaceSegment}`;
+  const canCreateCommand = Boolean(normalizedServiceName && normalizedPort);
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+  }, []);
+
+  const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
+
+  const handleCreateCommand = () => {
+    setOutput([
+      '$ ' + generatedCommand,
+      `Operation type: ${operationType}`,
+      `Service type: ${serviceType}`,
+      `Namespace: ${namespace}`,
+      `Port: ${normalizedPort}`,
+      'Status: command preview generated. Kubernetes execution is not connected yet.',
+    ].join('\n'));
+    setOutputVisible(true);
+  };
+
+  return (
+    <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes service command builder">
+      <div className="k8s-command-heading">
+        <div>
+          <h2>Service Command Builder</h2>
+          <p>Create a kubectl expose command preview for Pod, Deployment, StatefulSet, ReplicaSet, or ReplicationController resources.</p>
+        </div>
+        <div className="k8s-command-preview-card">
+          <span>Generated command</span>
+          <code>{generatedCommand}</code>
+        </div>
+      </div>
+
+      <div className="k8s-command-form">
+        <label>
+          <span>Service name</span>
+          <input
+            type="text"
+            value={serviceName}
+            onChange={(event) => setServiceName(event.target.value)}
+            placeholder="nginx"
+          />
+        </label>
+
+        <label>
+          <span>Operation</span>
+          <select value={operationType} onChange={(event) => setOperationType(event.target.value)}>
+            <option value="pod">pod</option>
+            <option value="deployment">deployment</option>
+            <option value="statefulset">statefulset</option>
+            <option value="replicaset">replicaset</option>
+            <option value="replicationcontroller">replicationcontroller</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Service type</span>
+          <select value={serviceType} onChange={(event) => setServiceType(event.target.value)}>
+            <option value="ClusterIP">ClusterIP</option>
+            <option value="NodePort">NodePort</option>
+            <option value="LoadBalancer">LoadBalancer</option>
+            <option value="ExternalName">ExternalName</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Namespace</span>
+          <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+            {namespaces.map((namespaceName) => (
+              <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+            ))}
+          </select>
+          <small>Namespaces created from the Namespace tab appear here.</small>
+        </label>
+
+        <label>
+          <span>Port</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={port}
+            onChange={(event) => setPort(event.target.value)}
+            placeholder="80"
+          />
+        </label>
+      </div>
+
+      <div className="k8s-command-actions">
+        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+          Create Service
+        </button>
+        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+          {outputVisible ? 'Hide Output View' : 'Output View'}
+        </button>
+      </div>
+
+      {outputVisible ? (
+        <div className="k8s-command-output">
+          <div>
+            <strong>Output View</strong>
+            <span>Preview only</span>
+          </div>
+          <pre>{output || ['$ ' + generatedCommand, 'Click Create to generate output.'].join('\n')}</pre>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KubernetesLiteralCommandPanel({ resourceType }) {
+  const isSecret = resourceType === 'secret';
+  const title = isSecret ? 'Secrets Command Builder' : 'ConfigMap Command Builder';
+  const nameLabel = isSecret ? 'Secret name' : 'ConfigMap name';
+  const namePlaceholder = isSecret ? 'nginx-secret' : 'nginx-config';
+  const createButtonLabel = isSecret ? 'Create Secret' : 'Create ConfigMap';
+  const commandResource = isSecret ? 'secret generic' : 'configmap';
+  const ariaLabel = isSecret ? 'Kubernetes secret command builder' : 'Kubernetes configmap command builder';
+  const [resourceName, setResourceName] = useState('');
+  const [namespace, setNamespace] = useState('default');
+  const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [literals, setLiterals] = useState([]);
+  const [outputVisible, setOutputVisible] = useState(false);
+  const [output, setOutput] = useState('');
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+  }, []);
+
+  const normalizedResourceName = resourceName.trim();
+  const commandResourceName = normalizedResourceName || (isSecret ? '<secret-name>' : '<configmap-name>');
+  const validLiterals = literals
+    .map((literal) => ({ key: literal.key.trim(), value: literal.value.trim() }))
+    .filter((literal) => literal.key && literal.value);
+  const literalSegments = validLiterals.length
+    ? validLiterals.map((literal) => `--from-literal=${literal.key}=${literal.value}`)
+    : ['--from-literal=<env>=<value>'];
+  const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
+  const generatedCommand = `kubectl create ${commandResource} ${commandResourceName}${namespaceSegment} ${literalSegments.join(' ')}`;
+  const canCreateCommand = Boolean(normalizedResourceName && validLiterals.length);
+
+  const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
+
+  const addLiteralRow = () => {
+    setLiterals((current) => [...current, { id: `${Date.now()}-${current.length}`, key: '', value: '' }]);
+  };
+
+  const updateLiteral = (id, field, value) => {
+    setLiterals((current) => current.map((literal) => (
+      literal.id === id ? { ...literal, [field]: value } : literal
+    )));
+  };
+
+  const removeLiteral = (id) => {
+    setLiterals((current) => current.filter((literal) => literal.id !== id));
+  };
+
+  const handleCreateCommand = () => {
+    setOutput([
+      '$ ' + generatedCommand,
+      `Resource: ${isSecret ? 'secret' : 'configmap'}`,
+      `Name: ${normalizedResourceName}`,
+      `Namespace: ${namespace}`,
+      `Literals: ${validLiterals.map((literal) => `${literal.key}=${literal.value}`).join(', ')}`,
+      'Status: command preview generated. Kubernetes execution is not connected yet.',
+    ].join('\n'));
+    setOutputVisible(true);
+  };
+
+  return (
+    <section className="home-panel kubernetes-command-panel" aria-label={ariaLabel}>
+      <div className="k8s-command-heading">
+        <div>
+          <h2>{title}</h2>
+          <p>{isSecret
+            ? 'Create a kubectl secret command preview from literal environment-style key/value pairs.'
+            : 'Create a kubectl configmap command preview from literal environment-style key/value pairs.'}</p>
+        </div>
+        <div className="k8s-command-preview-card">
+          <span>Generated command</span>
+          <code>{generatedCommand}</code>
+        </div>
+      </div>
+
+      <div className="k8s-command-form">
+        <label>
+          <span>{nameLabel}</span>
+          <input
+            type="text"
+            value={resourceName}
+            onChange={(event) => setResourceName(event.target.value)}
+            placeholder={namePlaceholder}
+          />
+        </label>
+
+        <label>
+          <span>Namespace</span>
+          <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+            {namespaces.map((namespaceName) => (
+              <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+            ))}
+          </select>
+          <small>Namespaces created from the Namespace tab appear here.</small>
+        </label>
+      </div>
+
+      <div className="k8s-literal-builder">
+        <div className="k8s-literal-heading">
+          <div>
+            <strong>Env and value fields</strong>
+            <span>Add one or more --from-literal entries.</span>
+          </div>
+          <button type="button" className="home-secondary-button" onClick={addLiteralRow}>Add</button>
+        </div>
+
+        {literals.length ? (
+          <div className="k8s-literal-list">
+            {literals.map((literal, index) => (
+              <div className="k8s-literal-row" key={literal.id}>
+                <label>
+                  <span>Env</span>
+                  <input
+                    type="text"
+                    value={literal.key}
+                    onChange={(event) => updateLiteral(literal.id, 'key', event.target.value)}
+                    placeholder={index === 0 ? 'name' : 'key'}
+                  />
+                </label>
+                <label>
+                  <span>Value</span>
+                  <input
+                    type="text"
+                    value={literal.value}
+                    onChange={(event) => updateLiteral(literal.id, 'value', event.target.value)}
+                    placeholder={index === 0 ? 'admin' : 'value'}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="k8s-literal-remove"
+                  onClick={() => removeLiteral(literal.id)}
+                  aria-label="Remove literal row"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="k8s-literal-empty">Click Add to enter env and value fields.</p>
+        )}
+      </div>
+
+      <div className="k8s-command-actions">
+        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+          {createButtonLabel}
+        </button>
+        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+          {outputVisible ? 'Hide Output View' : 'Output View'}
+        </button>
+      </div>
+
+      {outputVisible ? (
+        <div className="k8s-command-output">
+          <div>
+            <strong>Output View</strong>
+            <span>Preview only</span>
+          </div>
+          <pre>{output || ['$ ' + generatedCommand, 'Click Create to generate output.'].join('\n')}</pre>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

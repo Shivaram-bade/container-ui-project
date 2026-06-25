@@ -9124,7 +9124,8 @@ input[type="checkbox"] {
   color: #b91c1c;
 }
 
-.user-profile-form input[aria-invalid="true"] {
+.user-profile-form input[aria-invalid="true"],
+.rbac-form input[aria-invalid="true"] {
   border-color: #dc2626;
   box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
 }

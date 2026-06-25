@@ -81,7 +81,9 @@ ADMINISTRATOR_OPERATION = 'administrator'
 OPERATION_PERMISSIONS = [
     {"code": ADMINISTRATOR_OPERATION, "label": "Administrator - full access", "category": "Administration"},
     {"code": "create_rbac_user", "label": "Create new user", "category": "Administration"},
+    {"code": "delete_rbac_user", "label": "Delete user", "category": "Administration"},
     {"code": "create_rbac_group", "label": "Create new group", "category": "Administration"},
+    {"code": "delete_rbac_group", "label": "Delete user group", "category": "Administration"},
     {"code": "change_password", "label": "Change password", "category": "Account"},
     {"code": "view_server_info", "label": "Server health", "category": "Monitoring"},
     {"code": "view_monitoring", "label": "Container monitoring", "category": "Monitoring"},
@@ -7376,7 +7378,9 @@ def rbac_management(request):
     """Create/list/delete RBAC users and groups with operation assignments."""
     can_create_rbac_user = user_has_operation(request.user, 'create_rbac_user')
     can_create_rbac_group = user_has_operation(request.user, 'create_rbac_group')
-    if not (can_create_rbac_user or can_create_rbac_group):
+    can_delete_rbac_user = user_has_operation(request.user, 'delete_rbac_user')
+    can_delete_rbac_group = user_has_operation(request.user, 'delete_rbac_group')
+    if not (can_create_rbac_user or can_create_rbac_group or can_delete_rbac_user or can_delete_rbac_group):
         return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
@@ -7409,9 +7413,9 @@ def rbac_management(request):
 
     if request.method == 'DELETE':
         item_type = request.data.get('type', '').strip()
-        if item_type == 'user' and not can_create_rbac_user:
+        if item_type == 'user' and not can_delete_rbac_user:
             return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
-        if item_type == 'group' and not can_create_rbac_group:
+        if item_type == 'group' and not can_delete_rbac_group:
             return Response({'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
         item_id = request.data.get('id')
         if item_type == 'user':

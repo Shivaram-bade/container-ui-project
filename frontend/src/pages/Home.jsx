@@ -704,7 +704,7 @@ export default function Home() {
       'docker-images-registry': ['registry_deploy'],
       'server-info': ['view_server_info'],
       'user-profile': ['change_password'],
-      rbac: ['create_rbac_user', 'create_rbac_group'],
+      rbac: ['create_rbac_user', 'delete_rbac_user', 'create_rbac_group', 'delete_rbac_group'],
       'agent-create': ['create_agent', 'manage_agents', 'delete_agents'],
       'agent-connected': ['view_connected_agent', 'manage_agents'],
       monitoring: ['view_monitoring'],
@@ -716,6 +716,8 @@ export default function Home() {
   const visibleAgentActions = agentActions.filter(canSeeAction);
   const canCreateRbacUser = canOperate('create_rbac_user');
   const canCreateRbacGroup = canOperate('create_rbac_group');
+  const canDeleteRbacUser = canOperate('delete_rbac_user');
+  const canDeleteRbacGroup = canOperate('delete_rbac_group');
   const canViewNotifications = canOperate('view_notifications');
   const canDeleteNotifications = canOperate('delete_notifications');
   const isDashboardActive = activeAction.id === 'dashboard';
@@ -1129,6 +1131,19 @@ export default function Home() {
 
   const handleCreateRbacUser = async (event) => {
     event.preventDefault();
+    if (rbacPassword !== rbacConfirmPassword) {
+      const message = 'Password mismatched, please check it again.';
+      setRbacMessage(message);
+      setActiveToast({
+        id: `${Date.now()}-rbac-password-mismatch`,
+        message,
+        category: 'Users & Access',
+        type: 'error',
+        createdAt: new Date().toISOString(),
+        read: true,
+      });
+      return;
+    }
     setRbacLoading(true);
     setRbacMessage('');
     try {
@@ -3933,7 +3948,7 @@ export default function Home() {
 
               {rbacMenuOpen && (
                 <>
-                  {canCreateRbacUser && (
+                  {(canCreateRbacUser || canDeleteRbacUser) && (
                     <button
                       type="button"
                       className={`home-nav-item nested ${isRbacActive && rbacTab === 'user' ? 'active' : ''}`}
@@ -3943,11 +3958,11 @@ export default function Home() {
                       }}
                     >
                       <span className="home-nav-icon" aria-hidden="true">NU</span>
-                      <span className="home-nav-copy"><span className="home-nav-label">New user</span>
-                      <small>Create a login with scoped operations.</small></span>
+                      <span className="home-nav-copy"><span className="home-nav-label">{canCreateRbacUser ? 'New user' : 'Users'}</span>
+                      <small>{canCreateRbacUser ? 'Create a login with scoped operations.' : 'Manage existing users.'}</small></span>
                     </button>
                   )}
-                  {canCreateRbacGroup && (
+                  {(canCreateRbacGroup || canDeleteRbacGroup) && (
                     <button
                       type="button"
                       className={`home-nav-item nested ${isRbacActive && rbacTab === 'group' ? 'active' : ''}`}
@@ -3957,8 +3972,8 @@ export default function Home() {
                       }}
                     >
                       <span className="home-nav-icon" aria-hidden="true">NG</span>
-                      <span className="home-nav-copy"><span className="home-nav-label">New group</span>
-                      <small>Bundle permissions for reusable access.</small></span>
+                      <span className="home-nav-copy"><span className="home-nav-label">{canCreateRbacGroup ? 'New group' : 'Groups'}</span>
+                      <small>{canCreateRbacGroup ? 'Bundle permissions for reusable access.' : 'Manage existing groups.'}</small></span>
                     </button>
                   )}
                 </>
@@ -4134,6 +4149,8 @@ export default function Home() {
             rbacGroupOperations={rbacGroupOperations}
             canCreateRbacUser={canCreateRbacUser}
             canCreateRbacGroup={canCreateRbacGroup}
+            canDeleteRbacUser={canDeleteRbacUser}
+            canDeleteRbacGroup={canDeleteRbacGroup}
             onUsernameChange={setRbacUsername}
             onPasswordChange={setRbacPassword}
             onConfirmPasswordChange={setRbacConfirmPassword}
@@ -10793,6 +10810,8 @@ function RbacPanel({
   rbacGroupOperations,
   canCreateRbacUser,
   canCreateRbacGroup,
+  canDeleteRbacUser,
+  canDeleteRbacGroup,
   onUsernameChange,
   onPasswordChange,
   onConfirmPasswordChange,
@@ -10809,11 +10828,16 @@ function RbacPanel({
   const users = rbacData.users || [];
   const groups = rbacData.groups || [];
   const labelByCode = new Map(operations.map((operation) => [operation.code, operation.label]));
-  const activeRbacTab = rbacTab === 'user' && !canCreateRbacUser && canCreateRbacGroup
+  const canManageRbacUsers = canCreateRbacUser || canDeleteRbacUser;
+  const canManageRbacGroups = canCreateRbacGroup || canDeleteRbacGroup;
+  const activeRbacTab = rbacTab === 'user' && !canManageRbacUsers && canManageRbacGroups
     ? 'group'
-    : rbacTab === 'group' && !canCreateRbacGroup && canCreateRbacUser
+    : rbacTab === 'group' && !canManageRbacGroups && canManageRbacUsers
       ? 'user'
       : rbacTab;
+  const rbacPasswordsEntered = Boolean(rbacPassword && rbacConfirmPassword);
+  const rbacPasswordsMatch = rbacPasswordsEntered && rbacPassword === rbacConfirmPassword;
+  const rbacPasswordMismatch = rbacPasswordsEntered && !rbacPasswordsMatch;
 
   return (
     <section className="home-panel rbac-panel">
@@ -10834,18 +10858,37 @@ function RbacPanel({
       </div>
 
       <div className="rbac-mode-heading">
-        <span>{activeRbacTab === 'user' ? 'New user' : 'New group'}</span>
-        <p>{activeRbacTab === 'user' ? 'Create one login and choose its access.' : 'Create one reusable permission group.'}</p>
+        <span>{activeRbacTab === 'user' ? (canCreateRbacUser ? 'New user' : 'Users') : (canCreateRbacGroup ? 'New group' : 'Groups')}</span>
+        <p>{activeRbacTab === 'user' ? (canCreateRbacUser ? 'Create one login and choose its access.' : 'Delete existing users allowed by your role.') : (canCreateRbacGroup ? 'Create one reusable permission group.' : 'Delete existing user groups allowed by your role.')}</p>
       </div>
 
       {rbacMessage && <p className="container-message">{rbacMessage}</p>}
 
-      {activeRbacTab === 'user' ? (
+      {activeRbacTab === 'user' && canCreateRbacUser ? (
         <form className="agent-form rbac-form" onSubmit={onCreateUser}>
           <div className="agent-form-grid">
             <label><span>Username</span><input value={rbacUsername} onChange={(event) => onUsernameChange(event.target.value)} disabled={rbacLoading} autoComplete="username" /></label>
             <label><span>Password</span><input type="password" value={rbacPassword} onChange={(event) => onPasswordChange(event.target.value)} disabled={rbacLoading} autoComplete="new-password" /></label>
-            <label><span>Confirm password</span><input type="password" value={rbacConfirmPassword} onChange={(event) => onConfirmPasswordChange(event.target.value)} disabled={rbacLoading} autoComplete="new-password" /></label>
+            <label>
+              <span>Confirm password</span>
+              <input
+                type="password"
+                value={rbacConfirmPassword}
+                onChange={(event) => onConfirmPasswordChange(event.target.value)}
+                disabled={rbacLoading}
+                autoComplete="new-password"
+                aria-invalid={rbacPasswordMismatch}
+                aria-describedby="rbac-password-match-status"
+              />
+              {rbacPasswordsEntered ? (
+                <small
+                  id="rbac-password-match-status"
+                  className={`password-match-status ${rbacPasswordsMatch ? 'match' : 'mismatch'}`}
+                >
+                  {rbacPasswordsMatch ? 'Passwords match.' : 'Password mismatched, please check it again.'}
+                </small>
+              ) : null}
+            </label>
             <label>
               <span>Access group</span>
               <select value={rbacUserGroupId} onChange={(event) => onUserGroupChange(event.target.value)} disabled={rbacLoading}>
@@ -10860,10 +10903,10 @@ function RbacPanel({
             </div>
           </div>
           <div className="container-actions">
-            <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacUsername.trim() || !rbacPassword || !rbacConfirmPassword}>Create user</button>
+            <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacUsername.trim() || !rbacPassword || !rbacConfirmPassword || !rbacPasswordsMatch}>Create user</button>
           </div>
         </form>
-      ) : (
+      ) : activeRbacTab === 'group' && canCreateRbacGroup ? (
         <form className="agent-form rbac-form" onSubmit={onCreateGroup}>
           <div className="agent-form-grid">
             <label><span>Group name</span><input value={rbacGroupName} onChange={(event) => onGroupNameChange(event.target.value)} disabled={rbacLoading} /></label>
@@ -10873,7 +10916,7 @@ function RbacPanel({
             <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacGroupName.trim()}>Create group</button>
           </div>
         </form>
-      )}
+      ) : null}
 
       <div className="rbac-list-heading">
         <h3>{activeRbacTab === 'user' ? 'Users' : 'Groups'}</h3>
@@ -10893,7 +10936,7 @@ function RbacPanel({
                   </div>
                   <OperationBadges codes={user.operations} labelByCode={labelByCode} fallback={user.operations_configured ? 'No operations selected' : 'All operations'} />
                 </div>
-                <button type="button" className="home-danger-button" onClick={() => onDeleteItem('user', user.id)} disabled={rbacLoading || user.is_admin || !canCreateRbacUser}>Delete</button>
+                <button type="button" className="home-danger-button" onClick={() => onDeleteItem('user', user.id)} disabled={rbacLoading || user.is_admin || !canDeleteRbacUser}>Delete</button>
               </article>
             );
           }) : <p className="resource-empty-state">No created users found.</p>}
@@ -10909,7 +10952,7 @@ function RbacPanel({
                 </div>
                 <OperationBadges codes={group.operations} labelByCode={labelByCode} />
               </div>
-              <button type="button" className="home-danger-button" onClick={() => onDeleteItem('group', group.id)} disabled={rbacLoading || !canCreateRbacGroup}>Delete</button>
+              <button type="button" className="home-danger-button" onClick={() => onDeleteItem('group', group.id)} disabled={rbacLoading || !canDeleteRbacGroup}>Delete</button>
             </article>
           )) : <p className="resource-empty-state">No created groups found.</p>}
         </div>

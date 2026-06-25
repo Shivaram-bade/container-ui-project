@@ -10224,6 +10224,8 @@ input[type="checkbox"] {
   color: #8fb8ca;
   font-size: 12px;
   font-weight: 750;
+  position: relative;
+  top: 24px;
 }
 
 .images-registry-form input:focus,

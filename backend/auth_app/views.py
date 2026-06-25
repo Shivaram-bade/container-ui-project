@@ -47,7 +47,7 @@ from .serializers import (
 from .deployment_service import create_deployment_job, mark_deployment_job_complete, mark_deployment_job_running
 from .registry_service import (
     RegistryClientError, build_registry_reference, get_default_registry_push_host,
-    sync_registry_images, list_registry_tags, registry_manifest_exists,
+    sync_registry_images, list_registry_tags, registry_manifest_exists, delete_registry_manifest,
 )
 import pty
 import fcntl
@@ -5024,6 +5024,132 @@ def registry_tags(request):
     except RegistryClientError as exc:
         return Response({'success': False, 'error': str(exc), 'tags': []}, status=status.HTTP_400_BAD_REQUEST)
     return Response({'success': True, 'image': repository_name, 'tags': tags})
+
+
+def normalize_registry_repository_name(value):
+    repository = str(value or '').strip().strip('/')
+    if (
+        not repository
+        or len(repository) > 255
+        or repository.startswith('-')
+        or not re.fullmatch(r'[a-z0-9]+(?:(?:[._-]|__|[-]*)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._-]|__|[-]*)[a-z0-9]+)*)*', repository)
+    ):
+        raise ValueError('Enter a valid lowercase registry repository, for example my-nginx or team/api.')
+    return repository
+
+
+def normalize_registry_tag_name(value):
+    tag = str(value or '').strip()
+    if not tag or len(tag) > 128 or tag.startswith('.') or tag.startswith('-') or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', tag):
+        raise ValueError('Enter a valid image tag, for example v1 or latest.')
+    return tag
+
+
+def normalize_docker_source_image(value):
+    source = str(value or '').strip()
+    if not source or len(source) > 512 or source.startswith('-') or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@-]*', source):
+        raise ValueError('Select a valid Docker image from the selected server.')
+    return source
+
+
+@api_view(['POST', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def registry_manage_image(request):
+    if not user_has_operation(request.user, 'registry_deploy'):
+        return Response({'success': False, 'error': 'You do not have permission for this operation.'}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == 'POST':
+        try:
+            source_image = normalize_docker_source_image(request.data.get('source_image') or request.data.get('image') or request.data.get('image_id'))
+            repository_name = normalize_registry_repository_name(request.data.get('repository') or request.data.get('repository_name'))
+            tag = normalize_registry_tag_name(request.data.get('tag'))
+        except ValueError as exc:
+            return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        agent, password, remote_agent, error_response = get_docker_target_context(request)
+        if error_response:
+            return error_response
+
+        push_host = get_registry_pull_host_for_request(request) if remote_agent else get_default_registry_push_host()
+        target_reference = build_registry_reference(repository_name, tag, pull_host=push_host)
+        step_results = [
+            run_target_docker_command(agent, password, remote_agent, ['docker', 'image', 'tag', source_image, target_reference], timeout=180),
+        ]
+        if step_results[-1].get('success'):
+            step_results.append(run_target_docker_command(agent, password, remote_agent, ['docker', 'push', target_reference], timeout=900))
+
+        result = merge_docker_step_results(step_results)
+        if not result.get('success'):
+            return Response({
+                **result,
+                'success': False,
+                'error': result.get('error') or result.get('output') or 'Unable to tag and push the selected image.',
+                'target_reference': target_reference,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            images = sync_registry_images(owner=request.user, pull_host=get_registry_pull_host_for_request(request))
+        except RegistryClientError as exc:
+            return Response({
+                **result,
+                'success': True,
+                'warning': f'Image was pushed, but registry refresh failed: {exc}',
+                'target_reference': target_reference,
+                'repository': repository_name,
+                'tag': tag,
+                'images': [],
+            })
+
+        image = next((item for item in images if item.name == repository_name and item.tag == tag), None)
+        return Response({
+            **result,
+            'success': True,
+            'message': f'Image pushed to registry: {target_reference}',
+            'target_reference': target_reference,
+            'repository': repository_name,
+            'tag': tag,
+            'image': RegistryImageSerializer(image).data if image else None,
+            'images': RegistryImageSerializer(images, many=True).data,
+        })
+
+    image = None
+    image_id = request.data.get('image_id')
+    if image_id:
+        try:
+            image = RegistryImage.objects.select_related('repository').get(id=image_id)
+        except (RegistryImage.DoesNotExist, ValueError):
+            return Response({'success': False, 'error': 'Selected registry image was not found.'}, status=status.HTTP_404_NOT_FOUND)
+        repository_name = image.name
+        tag = image.tag
+    else:
+        try:
+            repository_name = normalize_registry_repository_name(request.data.get('repository') or request.data.get('repository_name'))
+            tag = normalize_registry_tag_name(request.data.get('tag'))
+        except ValueError as exc:
+            return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        image = RegistryImage.objects.select_related('repository').filter(name=repository_name, tag=tag).first()
+
+    try:
+        digest = delete_registry_manifest(repository_name, tag)
+    except RegistryClientError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if image:
+        image.delete()
+    try:
+        images = sync_registry_images(owner=request.user, pull_host=get_registry_pull_host_for_request(request))
+    except RegistryClientError:
+        images = []
+
+    return Response({
+        'success': True,
+        'message': f'Deleted {repository_name}:{tag} from registry.',
+        'repository': repository_name,
+        'tag': tag,
+        'digest': digest,
+        'output': f'DELETE /v2/{repository_name}/manifests/{digest}\nDeleted {repository_name}:{tag} from registry.',
+        'images': RegistryImageSerializer(images, many=True).data,
+    })
 
 
 @api_view(['POST'])

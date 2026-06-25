@@ -106,6 +106,53 @@ def registry_manifest_exists(repository_name, tag, registry_url=None):
         raise RegistryClientError(str(exc)) from exc
 
 
+def get_registry_manifest_digest(repository_name, tag, registry_url=None):
+    encoded_name = quote(repository_name, safe='/')
+    encoded_tag = quote(tag, safe='')
+    url = f'{(registry_url or get_default_registry_url()).rstrip("/")}/v2/{encoded_name}/manifests/{encoded_tag}'
+    request = urllib_request.Request(
+        url,
+        headers={
+            'Accept': ', '.join([
+                'application/vnd.oci.image.index.v1+json',
+                'application/vnd.oci.image.manifest.v1+json',
+                'application/vnd.docker.distribution.manifest.list.v2+json',
+                'application/vnd.docker.distribution.manifest.v2+json',
+            ]),
+        },
+        method='HEAD',
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=20) as response:
+            digest = response.headers.get('Docker-Content-Digest', '').strip()
+            if not digest:
+                raise RegistryClientError('Registry did not return a manifest digest for this tag.')
+            return digest
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise RegistryClientError(detail or str(exc)) from exc
+    except (urllib_error.URLError, TimeoutError, OSError) as exc:
+        raise RegistryClientError(str(exc)) from exc
+
+
+def delete_registry_manifest(repository_name, tag, registry_url=None):
+    digest = get_registry_manifest_digest(repository_name, tag, registry_url=registry_url)
+    encoded_name = quote(repository_name, safe='/')
+    encoded_digest = quote(digest, safe=':')
+    url = f'{(registry_url or get_default_registry_url()).rstrip("/")}/v2/{encoded_name}/manifests/{encoded_digest}'
+    request = urllib_request.Request(url, method='DELETE')
+    try:
+        with urllib_request.urlopen(request, timeout=20) as response:
+            if response.status not in (200, 202):
+                raise RegistryClientError(f'Registry delete returned HTTP {response.status}.')
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise RegistryClientError(detail or str(exc)) from exc
+    except (urllib_error.URLError, TimeoutError, OSError) as exc:
+        raise RegistryClientError(str(exc)) from exc
+    return digest
+
+
 def sync_registry_images(owner=None, registry_url=None, pull_host=None):
     registry_url = registry_url or get_default_registry_url()
     pull_host = pull_host or get_default_registry_push_host()

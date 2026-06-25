@@ -12,6 +12,7 @@ urlpatterns = [
     path('api/auth/', include('auth_app.urls')),
     path('api/registry/images/', auth_views.registry_images, name='registry_images'),
     path('api/registry/tags/', auth_views.registry_tags, name='registry_tags'),
+    path('api/registry/manage-image/', auth_views.registry_manage_image, name='registry_manage_image'),
     path('api/registry/deploy/', auth_views.registry_deploy, name='registry_deploy'),
     path('api/registry/deployment-poll/', auth_views.registry_deployment_poll, name='registry_deployment_poll'),
     path('api/registry/deployment-result/', auth_views.registry_deployment_result, name='registry_deployment_result'),

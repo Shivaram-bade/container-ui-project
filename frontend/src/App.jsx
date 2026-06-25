@@ -14,6 +14,7 @@ function App() {
     '/network',
     '/volume',
     '/server-info',
+    '/images-registry',
     '/rbac',
     '/agents/create',
     '/agents/connected',

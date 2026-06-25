@@ -96,6 +96,14 @@ const monitoringAction = {
   //description: 'Watch live health, utilization, networking, and lifecycle data for every container.',
 };
 
+const dockerImagesRegistryAction = {
+  id: 'docker-images-registry',
+  icon: 'IR',
+  path: '/images-registry',
+  title: 'Images Registry',
+  //description: 'Tag selected server images, push them to the registry, and delete registry tags.',
+};
+
 const notificationsAction = {
   id: 'notifications',
   icon: 'NT',
@@ -157,7 +165,7 @@ const NOTIFICATION_LIMIT = 150;
 const KUBERNETES_NAMESPACE_STORAGE_KEY = 'vitel-k8s-namespaces';
 const KUBERNETES_NAMESPACE_EVENT = 'vitel-k8s-namespaces-updated';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
-const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, notificationsAction, rbacAction, userProfileAction, ...agentActions, ...kubernetesActions];
+const routedActions = [dashboardAction, ...homeActions, registryAction, serverInfoAction, monitoringAction, dockerImagesRegistryAction, notificationsAction, rbacAction, userProfileAction, ...agentActions, ...kubernetesActions];
 const DashboardBackContext = createContext(null);
 
 const readStoredKubernetesNamespaces = () => {
@@ -572,6 +580,14 @@ export default function Home() {
   const [registryDeployLoading, setRegistryDeployLoading] = useState(false);
   const [registryDeployMessage, setRegistryDeployMessage] = useState('');
   const [registryDeployOutput, setRegistryDeployOutput] = useState('');
+  const [registryManagerServerId, setRegistryManagerServerId] = useState('');
+  const [registryManagerSelectedImageId, setRegistryManagerSelectedImageId] = useState('');
+  const [registryManagerRepository, setRegistryManagerRepository] = useState('');
+  const [registryManagerTag, setRegistryManagerTag] = useState('latest');
+  const [registryManagerLoading, setRegistryManagerLoading] = useState(false);
+  const [registryManagerMessage, setRegistryManagerMessage] = useState('');
+  const [registryManagerOutput, setRegistryManagerOutput] = useState('');
+  const [registryManagerDeleteTarget, setRegistryManagerDeleteTarget] = useState(null);
   const [selectedDeploymentNetwork, setSelectedDeploymentNetwork] = useState('');
   const [selectedDeploymentVolume, setSelectedDeploymentVolume] = useState('');
   const [containerLogOutput, setContainerLogOutput] = useState('');
@@ -678,6 +694,7 @@ export default function Home() {
       volume: ['view_volumes', 'create_volume', 'delete_volume'],
       deployment: ['view_deployments', 'create_deployment', 'delete_deployment'],
       registry: ['registry_deploy'],
+      'docker-images-registry': ['registry_deploy'],
       'server-info': ['view_server_info'],
       'user-profile': ['change_password'],
       rbac: ['create_rbac_user', 'create_rbac_group'],
@@ -700,6 +717,7 @@ export default function Home() {
   const isCreateAgentActive = activeAction.id === 'agent-create';
   const isConnectedAgentActive = activeAction.id === 'agent-connected';
   const isMonitoringActive = activeAction.id === 'monitoring';
+  const isDockerImagesRegistryActive = activeAction.id === 'docker-images-registry';
   const isNotificationsActive = activeAction.id === 'notifications';
   const isContainerActive = activeAction.id === 'container';
   const isBuildImageActive = activeAction.id === 'image';
@@ -831,6 +849,7 @@ export default function Home() {
       ['deployment', 'Deployments', deploymentMessage, deploymentNotificationServerId],
       ['deployment-action', 'Deployments', deploymentActionMessage, deploymentNotificationServerId],
       ['registry', 'Registry', registryDeployMessage, registryAgentId || LOCAL_SERVER_ID],
+      ['registry-manager', 'Images Registry', registryManagerMessage, registryManagerServerId || LOCAL_SERVER_ID],
       ['network', 'Networks', networkMessage, networkServerId || LOCAL_SERVER_ID],
       ['network-delete', 'Networks', networkDeleteMessage, networkServerId || LOCAL_SERVER_ID],
       ['volume', 'Volumes', volumeMessage, volumeServerId || LOCAL_SERVER_ID],
@@ -863,6 +882,7 @@ export default function Home() {
     deploymentMessage,
     deploymentActionMessage,
     registryDeployMessage,
+    registryManagerMessage,
     networkMessage,
     networkDeleteMessage,
     volumeMessage,
@@ -875,6 +895,7 @@ export default function Home() {
     deploymentDetail?.deployment?.target_agent?.id,
     selectedDeploymentId,
     registryAgentId,
+    registryManagerServerId,
     networkServerId,
     volumeServerId,
     agents,
@@ -1314,6 +1335,7 @@ export default function Home() {
   const getSelectedDockerServerId = () => containerServerId || LOCAL_SERVER_ID;
   const getSelectedDashboardServerId = () => dashboardServerId || LOCAL_SERVER_ID;
   const getSelectedImageServerId = () => imageServerId || LOCAL_SERVER_ID;
+  const getSelectedRegistryManagerServerId = () => registryManagerServerId || LOCAL_SERVER_ID;
   const getSelectedNetworkServerId = () => networkServerId || LOCAL_SERVER_ID;
   const getSelectedVolumeServerId = () => volumeServerId || LOCAL_SERVER_ID;
 
@@ -1338,6 +1360,13 @@ export default function Home() {
       loadImages(getSelectedImageServerId());
     }
   }, [isBuildImageActive, imageTab, imageServerId]);
+
+  useEffect(() => {
+    if (!isDockerImagesRegistryActive) return;
+    loadAgents();
+    loadImages(getSelectedRegistryManagerServerId());
+    loadRegistryImages();
+  }, [isDockerImagesRegistryActive, registryManagerServerId]);
 
   useEffect(() => {
     if (isBuildImageActive || isNetworkActive || isVolumeActive) {
@@ -1535,7 +1564,7 @@ export default function Home() {
       const needsAgents = [
         'view_connected_agent', 'view_running_containers', 'view_stopped_containers',
         'view_recycle_bin', 'view_images', 'view_networks', 'view_volumes',
-        'view_deployments', 'view_monitoring', 'view_server_info',
+        'view_deployments', 'view_monitoring', 'view_server_info', 'registry_deploy',
       ].some(canOperate);
       if (needsAgents) requests.push(loadAgents({ silent }));
       if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) {
@@ -1546,6 +1575,7 @@ export default function Home() {
       if (canOperate('view_volumes')) requests.push(loadVolumes(serverId, { silent }));
       if (canOperate('view_deployments')) requests.push(loadDeployments({ silent }));
       if (canOperate('view_recycle_bin')) requests.push(loadRecycledContainers({ silent }));
+      if (canOperate('registry_deploy')) requests.push(loadRegistryImages());
       await Promise.allSettled(requests);
     };
 
@@ -2183,6 +2213,11 @@ export default function Home() {
     if (target === 'monitoring') {
       setMonitoringServerId(dashboardServerId);
       handleActionSelect(monitoringAction);
+      return;
+    }
+    if (target === 'images-registry') {
+      setRegistryManagerServerId(dashboardServerId);
+      handleActionSelect(dockerImagesRegistryAction);
       return;
     }
     if (target === 'notifications') {
@@ -3664,6 +3699,87 @@ export default function Home() {
     }
   };
 
+  const getDockerImageSourceReference = (image) => {
+    if (!image) return '';
+    const repository = String(image.Repository || image.repository || '').trim();
+    const tag = String(image.Tag || image.tag || '').trim();
+    if (repository && tag && repository !== '<none>' && tag !== '<none>') {
+      return `${repository}:${tag}`;
+    }
+    return String(image.ID || image.Id || image.id || '').trim();
+  };
+
+  const getDockerImageSelectionKey = (image) => [
+    image?.ID || image?.Id || image?.id || '',
+    image?.Repository || image?.repository || '',
+    image?.Tag || image?.tag || '',
+  ].map((value) => String(value || '')).join('|');
+
+  const handlePushImageToRegistry = async (event) => {
+    event.preventDefault();
+    const selectedImage = images.find((image) => getDockerImageSelectionKey(image) === String(registryManagerSelectedImageId));
+    const sourceImage = getDockerImageSourceReference(selectedImage);
+    setRegistryManagerLoading(true);
+    setRegistryManagerMessage('');
+    setRegistryManagerOutput('Tagging and pushing image to registry...');
+
+    try {
+      const response = await authService.pushImageToRegistry({
+        server_id: getSelectedRegistryManagerServerId(),
+        source_image: sourceImage,
+        repository: registryManagerRepository,
+        tag: registryManagerTag,
+      });
+      setRegistryManagerOutput(response.data.output || response.data.message || `Pushed ${response.data.target_reference || 'image'} to registry.`);
+      setRegistryManagerMessage(response.data.message || `Image ${sourceImage} pushed to registry.`);
+      setRegistryManagerSelectedImageId('');
+      setRegistryManagerRepository('');
+      setRegistryManagerTag('latest');
+      if (Array.isArray(response.data.images)) setRegistryImages(response.data.images);
+      else loadRegistryImages();
+    } catch (error) {
+      const data = error.response?.data;
+      setRegistryManagerOutput(data?.output || data?.error || error.message || 'Unable to push image to registry.');
+      setRegistryManagerMessage(data?.error || 'Unable to push image to registry.');
+    } finally {
+      setRegistryManagerLoading(false);
+    }
+  };
+
+  const handleDeleteRegistryImageTag = async () => {
+    if (!registryManagerDeleteTarget) return;
+    setRegistryManagerLoading(true);
+    setRegistryManagerMessage('');
+    setRegistryManagerOutput(`Deleting ${registryManagerDeleteTarget.reference || `${registryManagerDeleteTarget.name}:${registryManagerDeleteTarget.tag}`} from registry...`);
+
+    try {
+      const response = await authService.deleteRegistryImage({ image_id: registryManagerDeleteTarget.id });
+      setRegistryManagerOutput(response.data.output || response.data.message || 'Registry image deleted.');
+      setRegistryManagerMessage(response.data.message || 'Registry image deleted.');
+      setRegistryManagerDeleteTarget(null);
+      if (Array.isArray(response.data.images)) setRegistryImages(response.data.images);
+      else loadRegistryImages();
+    } catch (error) {
+      const data = error.response?.data;
+      setRegistryManagerOutput(data?.output || data?.error || error.message || 'Unable to delete registry image.');
+      setRegistryManagerMessage(data?.error || 'Unable to delete registry image.');
+    } finally {
+      setRegistryManagerLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!registryManagerMessage) {
+      return undefined;
+    }
+
+    const clearTimer = window.setTimeout(() => {
+      setRegistryManagerMessage('');
+    }, 3000);
+
+    return () => window.clearTimeout(clearTimer);
+  }, [registryManagerMessage]);
+
   useEffect(() => {
     if (!deploymentJobId || !deploymentLoading) {
       return undefined;
@@ -3834,6 +3950,12 @@ export default function Home() {
             () => handleActionSelect(monitoringAction)
           )}
 
+          {canSeeAction(dockerImagesRegistryAction) && renderNavItem(
+            dockerImagesRegistryAction,
+            isDockerImagesRegistryActive,
+            () => handleActionSelect(dockerImagesRegistryAction)
+          )}
+
           {canViewNotifications && renderNavItem(
             notificationsAction,
             isNotificationsActive,
@@ -3913,6 +4035,7 @@ export default function Home() {
             recycledContainers={recycledContainers}
             recycledContainersLoading={recycledContainersLoading}
             recycledContainersError={recycledContainersError}
+            registryImageCount={registryImages.length}
             notificationCount={canViewNotifications ? notifications.length : null}
             unreadNotificationCount={canViewNotifications ? unreadNotificationCount : 0}
             onRefresh={() => {
@@ -3920,7 +4043,7 @@ export default function Home() {
               if ([
                 'view_connected_agent', 'view_running_containers', 'view_stopped_containers',
                 'view_recycle_bin', 'view_images', 'view_networks', 'view_volumes',
-                'view_deployments', 'view_monitoring', 'view_server_info',
+                'view_deployments', 'view_monitoring', 'view_server_info', 'registry_deploy',
               ].some(canOperate)) loadAgents();
               if (canOperate('view_running_containers') || canOperate('view_stopped_containers')) loadContainers(serverId);
               if (canOperate('view_images')) loadImages(serverId);
@@ -3928,6 +4051,7 @@ export default function Home() {
               if (canOperate('view_volumes')) loadVolumes(serverId);
               if (canOperate('view_deployments')) loadDeployments();
               if (canOperate('view_recycle_bin')) loadRecycledContainers();
+              if (canOperate('registry_deploy')) loadRegistryImages();
             }}
             onOpenResource={handleDashboardNavigate}
             canOperate={canOperate}
@@ -4042,6 +4166,41 @@ export default function Home() {
             onSendShellCommand={handleSendShellCommand}
             onCloseConnectModal={handleCloseShell}
             onConnectModalDragStart={handleConnectModalDragStart}
+            canOperate={canOperate}
+          />
+        ) : isDockerImagesRegistryActive ? (
+          <ImagesRegistryPanel
+            agents={agents}
+            agentsLoading={agentsLoading}
+            serverId={registryManagerServerId}
+            onServerIdChange={(serverId) => {
+              setRegistryManagerServerId(serverId === LOCAL_SERVER_ID ? '' : serverId);
+              setRegistryManagerSelectedImageId('');
+            }}
+            images={images}
+            imagesLoading={imagesLoading}
+            imagesError={imagesError}
+            selectedImageId={registryManagerSelectedImageId}
+            onSelectedImageChange={setRegistryManagerSelectedImageId}
+            repository={registryManagerRepository}
+            onRepositoryChange={setRegistryManagerRepository}
+            tag={registryManagerTag}
+            onTagChange={setRegistryManagerTag}
+            registryImages={registryImages}
+            registryImagesLoading={registryImagesLoading}
+            registryImagesError={registryImagesError}
+            loading={registryManagerLoading}
+            message={registryManagerMessage}
+            output={registryManagerOutput}
+            deleteTarget={registryManagerDeleteTarget}
+            onDeleteTargetChange={setRegistryManagerDeleteTarget}
+            onPush={handlePushImageToRegistry}
+            onDelete={handleDeleteRegistryImageTag}
+            onRefresh={() => {
+              loadImages(getSelectedRegistryManagerServerId());
+              loadRegistryImages();
+            }}
+            onRefreshAgents={loadAgents}
             canOperate={canOperate}
           />
         ) : isCreateAgentActive || isConnectedAgentActive ? (
@@ -5627,6 +5786,7 @@ function DashboardPanel({
   recycledContainers,
   recycledContainersLoading,
   recycledContainersError,
+  registryImageCount = 0,
   notificationCount = 0,
   unreadNotificationCount = 0,
   onRefresh,
@@ -5654,6 +5814,7 @@ function DashboardPanel({
     { key: 'volumes', permission: 'view_volumes', title: 'Volumes', value: volumes.length, meta: 'Persistent storage', visual: 'volumes' },
     { key: 'networks', permission: 'view_networks', title: 'Networks', value: networks.length, meta: 'Connection fabric', visual: 'networks' },
     { key: 'images', permission: 'view_images', title: 'Images', value: images.length, meta: 'Build artifacts', visual: 'images' },
+    { key: 'images-registry', permission: 'registry_deploy', title: 'Images Registry', value: registryImageCount, meta: 'Pushed registry tags', visual: 'registry-images' },
     { key: 'deployments', permission: 'view_deployments', title: 'Deployments', value: deployments.length, meta: 'Compose applications', visual: 'deployments' },
     notificationCount !== null ? {
       key: 'notifications',
@@ -6004,6 +6165,15 @@ function DashboardVisual({ type }) {
         <span className="dv-image-layer layer-b" />
         <span className="dv-image-layer layer-c" />
         <span className="dv-scanline" />
+      </>
+    ),
+    'registry-images': (
+      <>
+        <span className="dv-registry-stack stack-a" />
+        <span className="dv-registry-stack stack-b" />
+        <span className="dv-registry-stack stack-c" />
+        <span className="dv-registry-arrow" />
+        <span className="dv-registry-glow" />
       </>
     ),
     deployments: (
@@ -9096,6 +9266,235 @@ function RegistryPanel({
         <h3>Deployment job</h3>
         <pre>{deployOutput || (imagesLoading ? 'Loading registry images...' : 'No deployment queued yet.')}</pre>
       </div>
+    </section>
+  );
+}
+
+function ImagesRegistryPanel({
+  agents,
+  agentsLoading,
+  serverId,
+  onServerIdChange,
+  images,
+  imagesLoading,
+  imagesError,
+  selectedImageId,
+  onSelectedImageChange,
+  repository,
+  onRepositoryChange,
+  tag,
+  onTagChange,
+  registryImages,
+  registryImagesLoading,
+  registryImagesError,
+  loading,
+  message,
+  output,
+  deleteTarget,
+  onDeleteTargetChange,
+  onPush,
+  onDelete,
+  onRefresh,
+  onRefreshAgents,
+  canOperate = () => true,
+}) {
+  const [outputVisible, setOutputVisible] = useState(false);
+  const selectedServerId = serverId || LOCAL_SERVER_ID;
+  const canManageRegistry = canOperate('registry_deploy');
+  const serverOptions = [
+    { id: LOCAL_SERVER_ID, name: 'Application server', detail: 'local Docker host' },
+    ...agents
+      .filter((agent) => {
+        const name = String(agent.name || '').trim().toLowerCase();
+        const serverIp = String(agent.server_ip || '').trim().toLowerCase();
+        return !agent.is_deleted && !(name === 'application server' && ['backend', 'localhost', '127.0.0.1'].includes(serverIp));
+      })
+      .map((agent) => ({
+        id: String(agent.id),
+        name: agent.name || `agent-${agent.id}`,
+        detail: `${agent.server_ip || 'agent'}:${agent.port || 19541}${agent.connected ? '' : ' · offline'}`,
+        disabled: !agent.connected,
+      })),
+  ];
+  const getImageKey = (image) => [
+    image?.ID || image?.Id || image?.id || '',
+    image?.Repository || image?.repository || '',
+    image?.Tag || image?.tag || '',
+  ].map((value) => String(value || '')).join('|');
+  const getImageSource = (image) => {
+    if (!image) return '';
+    const imageRepository = String(image.Repository || image.repository || '').trim();
+    const imageTag = String(image.Tag || image.tag || '').trim();
+    if (imageRepository && imageTag && imageRepository !== '<none>' && imageTag !== '<none>') return `${imageRepository}:${imageTag}`;
+    return String(image.ID || image.Id || image.id || '').trim();
+  };
+  const selectedImage = images.find((image) => getImageKey(image) === selectedImageId);
+  const selectedImageSource = getImageSource(selectedImage);
+  const suggestedRepository = selectedImage
+    ? String(selectedImage.Repository || '').split('/').pop().replace(/[^a-zA-Z0-9_.-]+/g, '-').toLowerCase()
+    : '';
+  const targetRepository = repository.trim() || '<repository>';
+  const targetTag = tag.trim() || 'latest';
+  const targetReference = `registry-host/${targetRepository}:${targetTag}`;
+
+  useEffect(() => {
+    if (output) setOutputVisible(true);
+  }, [output]);
+
+  return (
+    <section className="home-panel images-registry-panel">
+      <PanelIntro
+        title="Images Registry"
+        description="Select an agent server, choose an existing Docker image, tag it, push it into the registry, and remove pushed registry tags."
+      >
+        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefresh} disabled={loading || imagesLoading || registryImagesLoading}>
+          Refresh
+        </button>
+        <button type="button" className="home-secondary-button refresh-action-button" onClick={onRefreshAgents} disabled={loading || agentsLoading}>
+          Refresh agents
+        </button>
+      </PanelIntro>
+
+      <div className="images-registry-layout">
+        <section className="images-registry-card">
+          <h3>Source server images</h3>
+          <div className="images-registry-form-grid">
+            <label>
+              <span>Select agent server</span>
+              <select value={selectedServerId} onChange={(event) => onServerIdChange(event.target.value)} disabled={loading || agentsLoading}>
+                {serverOptions.map((server) => (
+                  <option value={server.id} key={server.id} disabled={server.disabled}>
+                    {server.name} - {server.detail}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="images-registry-selection-hint">Click an image row below to select it for tag and push.</p>
+          </div>
+
+          {imagesError ? <p className="build-message error">{imagesError}</p> : null}
+          {imagesLoading ? <p className="resource-empty-state">Loading images from selected server...</p> : null}
+
+          <div className="images-registry-table-wrap">
+            <table className="images-registry-table">
+              <thead>
+                <tr>
+                  <th>Image</th>
+                  <th>Tag</th>
+                  <th>ID</th>
+                  <th>Size</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {images.length ? images.map((image) => {
+                  const key = getImageKey(image);
+                  return (
+                    <tr className={key === selectedImageId ? 'selected' : ''} key={key} onClick={() => onSelectedImageChange(key)}>
+                      <td>{image.Repository || image.repository || '<none>'}</td>
+                      <td>{image.Tag || image.tag || '<none>'}</td>
+                      <td>{String(image.ID || image.Id || '').replace(/^sha256:/, '').slice(0, 18)}</td>
+                      <td>{image.Size || image.size || '—'}</td>
+                      <td>{image.CreatedSince || image.CreatedAt || '—'}</td>
+                    </tr>
+                  );
+                }) : (
+                  <tr><td colSpan="5">No images found on selected server.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="images-registry-card">
+          <h3>Tag and push to registry</h3>
+          <form className="images-registry-form" onSubmit={onPush}>
+            <label>
+              <span>Source image</span>
+              <input value={selectedImageSource} readOnly placeholder="Select an image" />
+            </label>
+            <label>
+              <span>Repository/name</span>
+              <input value={repository} onChange={(event) => onRepositoryChange(event.target.value)} placeholder={suggestedRepository || 'my-nginx'} disabled={loading} />
+            </label>
+            <label>
+              <span>Tag</span>
+              <input value={tag} onChange={(event) => onTagChange(event.target.value)} placeholder="v1" disabled={loading} />
+            </label>
+            <div className="images-registry-command-preview">
+              <span>Command preview</span>
+              <code>docker tag {selectedImageSource || '<source-image>'} {targetReference}</code>
+              <code>docker push {targetReference}</code>
+            </div>
+            {message ? <p className={message.toLowerCase().includes('unable') || message.toLowerCase().includes('error') ? 'build-message error' : 'build-message'}>{message}</p> : null}
+            <div className="build-actions">
+              <button type="submit" className="home-primary-button" disabled={!canManageRegistry || loading || !selectedImageSource || !repository.trim() || !tag.trim()}>
+                {loading ? 'Working...' : 'Tag & Push'}
+              </button>
+              <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+                {outputVisible ? 'Hide Output View' : 'Output View'}
+              </button>
+            </div>
+          </form>
+
+          {outputVisible ? (
+            <div className="agent-command-panel images-registry-output">
+              <h3>Output View</h3>
+              <pre>{output || 'No registry operation output yet.'}</pre>
+            </div>
+          ) : null}
+        </section>
+      </div>
+
+      <section className="images-registry-card pushed-images-card">
+        <h3>Pushed registry images</h3>
+        {registryImagesError ? <p className="build-message error">{registryImagesError}</p> : null}
+        {registryImagesLoading ? <p className="resource-empty-state">Loading registry images...</p> : null}
+        <div className="images-registry-table-wrap">
+          <table className="images-registry-table">
+            <thead>
+              <tr>
+                <th>Registry path</th>
+                <th>Repository</th>
+                <th>Tag</th>
+                <th>Synced</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {registryImages.length ? registryImages.map((image) => (
+                <tr key={image.id}>
+                  <td>{image.reference || `${image.name}:${image.tag}`}</td>
+                  <td>{image.name}</td>
+                  <td>{image.tag}</td>
+                  <td>{formatNotificationTime(image.last_synced_at || image.updated_at || image.created_at)}</td>
+                  <td>
+                    <button type="button" className="home-danger-button compact-danger-button" onClick={() => onDeleteTargetChange(image)} disabled={loading || !canManageRegistry}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="5">No registry images found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {deleteTarget ? (
+        <div className="modal-backdrop">
+          <div className="resource-delete-modal">
+            <h3>Delete registry image?</h3>
+            <p>Delete {deleteTarget.reference || `${deleteTarget.name}:${deleteTarget.tag}`} from registry?</p>
+            <p>This removes only the pushed registry tag. It does not delete the original image on the agent server.</p>
+            <div className="resource-modal-actions">
+              <button type="button" className="home-secondary-button" onClick={() => onDeleteTargetChange(null)} disabled={loading}>Cancel</button>
+              <button type="button" className="home-danger-button" onClick={onDelete} disabled={loading}>{loading ? 'Deleting...' : 'Delete'}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -412,6 +412,16 @@ export const authService = {
     return api.post('/api/registry/deploy/', deploymentData);
   },
 
+  pushImageToRegistry: (imageData) => {
+    return api.post('/api/registry/manage-image/', imageData);
+  },
+
+  deleteRegistryImage: (imageData) => {
+    return api.delete('/api/registry/manage-image/', {
+      data: imageData,
+    });
+  },
+
   listNetworks: (serverId) => {
     return api.get('/api/auth/network/', {
       params: serverId ? { server_id: serverId } : {},

@@ -496,19 +496,54 @@ def get_request_browser_hostname(request):
     return parsed_origin.hostname if parsed_origin and parsed_origin.hostname else ''
 
 
+def is_loopback_or_internal_host(value):
+    host = str(value or '').strip().lower().strip('[]')
+    return host in {'', 'localhost', '127.0.0.1', '::1', 'backend', 'vitel-backend'}
+
+
+def get_detected_application_server_host():
+    configured_host = (
+        os.getenv('VITEL_PUBLIC_HOST', '').strip()
+        or os.getenv('VITEL_APPLICATION_HOST', '').strip()
+        or os.getenv('VITEL_SERVER_IP', '').strip()
+    )
+    if configured_host and not is_loopback_or_internal_host(configured_host):
+        return configured_host.split(':')[0].strip('[]')
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(('8.8.8.8', 80))
+            detected = probe.getsockname()[0]
+            if detected and not is_loopback_or_internal_host(detected):
+                return detected
+    except OSError:
+        pass
+
+    try:
+        for address in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if address and not is_loopback_or_internal_host(address):
+                return address
+    except OSError:
+        pass
+
+    return ''
+
+
 def get_local_application_host(request):
     browser_hostname = get_request_browser_hostname(request)
     request_host = request.get_host().split(':')[0]
     internal_hosts = {'backend', 'vitel-backend', 'localhost', '127.0.0.1', '::1'}
-    if browser_hostname and request_host in internal_hosts:
+    if browser_hostname and request_host in internal_hosts and not is_loopback_or_internal_host(browser_hostname):
         return browser_hostname
+    if is_loopback_or_internal_host(request_host):
+        detected_host = get_detected_application_server_host()
+        if detected_host:
+            return detected_host
     return request_host
 
 
 def get_controller_base_url(request):
-    browser_hostname = ''
-    if hasattr(request, 'data'):
-        browser_hostname = str(request.data.get('browser_hostname', '') or '').strip()
+    browser_hostname = get_request_browser_hostname(request)
 
     origin = request.META.get('HTTP_ORIGIN') or request.META.get('HTTP_REFERER') or ''
     parsed_origin = urlparse(origin) if origin else None
@@ -2253,6 +2288,8 @@ def get_registry_pull_host_for_request(request):
         return configured_host.rstrip('/')
     controller_url = get_controller_base_url(request)
     hostname = urlparse(controller_url).hostname or get_local_application_host(request)
+    if is_loopback_or_internal_host(hostname):
+        hostname = get_local_application_host(request) or get_detected_application_server_host() or hostname
     port = os.getenv('VITEL_REGISTRY_PORT', '5000').strip() or '5000'
     if ':' in hostname and not hostname.startswith('['):
         hostname = f'[{hostname}]'
@@ -4992,7 +5029,11 @@ def registry_images(request):
     except RegistryClientError as exc:
         return Response({'success': False, 'error': str(exc), 'images': []}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({'success': True, 'images': RegistryImageSerializer(images, many=True).data})
+    return Response({
+        'success': True,
+        'registry_host': pull_host,
+        'images': RegistryImageSerializer(images, many=True).data,
+    })
 
 
 @api_view(['GET'])
@@ -5009,6 +5050,7 @@ def registry_tags(request):
             return Response({'success': False, 'error': str(exc), 'tags': []}, status=status.HTTP_400_BAD_REQUEST)
         return Response({
             'success': True,
+            'registry_host': pull_host,
             'tags': [
                 {
                     'image': image.name,
@@ -5070,7 +5112,7 @@ def registry_manage_image(request):
         if error_response:
             return error_response
 
-        push_host = get_registry_pull_host_for_request(request) if remote_agent else get_default_registry_push_host()
+        push_host = get_registry_pull_host_for_request(request)
         target_reference = build_registry_reference(repository_name, tag, pull_host=push_host)
         step_results = [
             run_target_docker_command(agent, password, remote_agent, ['docker', 'image', 'tag', source_image, target_reference], timeout=180),
@@ -5087,6 +5129,20 @@ def registry_manage_image(request):
                 'target_reference': target_reference,
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        cleanup_result = run_target_docker_command(agent, password, remote_agent, ['docker', 'image', 'rm', target_reference], timeout=120)
+        cleanup_output = '\n'.join([
+            f'$ {cleanup_result.get("command", f"docker image rm {target_reference}")}',
+            cleanup_result.get('output') or (
+                f'Removed temporary local registry tag: {target_reference}'
+                if cleanup_result.get('success')
+                else f'Warning: registry push succeeded, but temporary local tag cleanup failed: {target_reference}'
+            ),
+        ]).strip()
+        result['output'] = '\n'.join([item for item in [result.get('output', ''), cleanup_output] if item]).strip()
+        result['cleanup_success'] = bool(cleanup_result.get('success'))
+        if not cleanup_result.get('success'):
+            result['warning'] = f'Image was pushed, but temporary local registry tag cleanup failed: {target_reference}'
+
         try:
             images = sync_registry_images(owner=request.user, pull_host=get_registry_pull_host_for_request(request))
         except RegistryClientError as exc:
@@ -5095,6 +5151,7 @@ def registry_manage_image(request):
                 'success': True,
                 'warning': f'Image was pushed, but registry refresh failed: {exc}',
                 'target_reference': target_reference,
+                'registry_host': push_host,
                 'repository': repository_name,
                 'tag': tag,
                 'images': [],
@@ -5106,6 +5163,7 @@ def registry_manage_image(request):
             'success': True,
             'message': f'Image pushed to registry: {target_reference}',
             'target_reference': target_reference,
+            'registry_host': push_host,
             'repository': repository_name,
             'tag': tag,
             'image': RegistryImageSerializer(image).data if image else None,

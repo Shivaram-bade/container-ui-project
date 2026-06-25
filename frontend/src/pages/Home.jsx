@@ -576,6 +576,7 @@ export default function Home() {
   const [registryImages, setRegistryImages] = useState([]);
   const [registryImagesLoading, setRegistryImagesLoading] = useState(false);
   const [registryImagesError, setRegistryImagesError] = useState('');
+  const [registryHost, setRegistryHost] = useState('');
   const [registryAgentId, setRegistryAgentId] = useState('');
   const [registryImageId, setRegistryImageId] = useState('');
   const [registryContainerName, setRegistryContainerName] = useState('');
@@ -3661,6 +3662,7 @@ export default function Home() {
     try {
       const response = await authService.listRegistryImages();
       setRegistryImages(response.data.images || []);
+      setRegistryHost((currentHost) => response.data.registry_host || currentHost);
     } catch (error) {
       const data = error.response?.data;
       setRegistryImages([]);
@@ -3768,6 +3770,7 @@ export default function Home() {
         repository: registryManagerRepository,
         tag: registryManagerTag,
       });
+      if (response.data.registry_host) setRegistryHost(response.data.registry_host);
       setRegistryManagerOutput(response.data.output || response.data.message || `Pushed ${response.data.target_reference || 'image'} to registry.`);
       setRegistryManagerMessage(response.data.message || `Image ${sourceImage} pushed to registry.`);
       setRegistryManagerSelectedImageId('');
@@ -4234,6 +4237,7 @@ export default function Home() {
             registryImages={registryImages}
             registryImagesLoading={registryImagesLoading}
             registryImagesError={registryImagesError}
+            registryHost={registryHost}
             loading={registryManagerLoading}
             message={registryManagerMessage}
             output={registryManagerOutput}
@@ -9376,6 +9380,7 @@ function ImagesRegistryPanel({
   registryImages,
   registryImagesLoading,
   registryImagesError,
+  registryHost,
   loading,
   message,
   output,
@@ -9424,7 +9429,11 @@ function ImagesRegistryPanel({
     : '';
   const targetRepository = repository.trim() || '<repository>';
   const targetTag = tag.trim() || 'latest';
-  const targetReference = `registry-host/${targetRepository}:${targetTag}`;
+  const browserHost = typeof window !== 'undefined' ? window.location.hostname : '';
+  const previewRegistryHost = registryHost || (browserHost && !['localhost', '127.0.0.1', '::1'].includes(browserHost)
+    ? `${browserHost}:5000`
+    : '<server-ip>:5000');
+  const targetReference = `${previewRegistryHost}/${targetRepository}:${targetTag}`;
   const isErrorMessage = (value) => value.toLowerCase().includes('unable') || value.toLowerCase().includes('error');
   const previousLoadingRef = useRef(false);
 

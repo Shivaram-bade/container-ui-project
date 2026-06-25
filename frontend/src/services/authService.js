@@ -9,6 +9,11 @@ const api = axios.create({
   },
 });
 
+const getBrowserHostname = () => {
+  if (typeof window === 'undefined') return '';
+  return window.location.hostname || '';
+};
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('access_token');
   if (token) {
@@ -399,12 +404,14 @@ export const authService = {
 
 
   listRegistryImages: () => {
-    return api.get('/api/registry/images/');
+    return api.get('/api/registry/images/', {
+      params: { browser_hostname: getBrowserHostname() },
+    });
   },
 
   listRegistryTags: (repository) => {
     return api.get('/api/registry/tags/', {
-      params: { image: repository },
+      params: { image: repository, browser_hostname: getBrowserHostname() },
     });
   },
 
@@ -413,12 +420,18 @@ export const authService = {
   },
 
   pushImageToRegistry: (imageData) => {
-    return api.post('/api/registry/manage-image/', imageData);
+    return api.post('/api/registry/manage-image/', {
+      ...imageData,
+      browser_hostname: getBrowserHostname(),
+    });
   },
 
   deleteRegistryImage: (imageData) => {
     return api.delete('/api/registry/manage-image/', {
-      data: imageData,
+      data: {
+        ...imageData,
+        browser_hostname: getBrowserHostname(),
+      },
     });
   },
 

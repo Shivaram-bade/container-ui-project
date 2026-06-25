@@ -270,6 +270,11 @@ const CONTAINER_REGISTRIES = [
     endpoint: 'docker.io',
   },
   {
+    id: 'local-registry',
+    label: 'Local registry image',
+    endpoint: 'registry volume',
+  },
+  {
     id: 'dockerfile',
     label: 'Build from Dockerfile',
     endpoint: 'local build',
@@ -582,6 +587,7 @@ export default function Home() {
   const [registryDeployOutput, setRegistryDeployOutput] = useState('');
   const [registryManagerServerId, setRegistryManagerServerId] = useState('');
   const [registryManagerSelectedImageId, setRegistryManagerSelectedImageId] = useState('');
+  const [registryManagerSourceImage, setRegistryManagerSourceImage] = useState('');
   const [registryManagerRepository, setRegistryManagerRepository] = useState('');
   const [registryManagerTag, setRegistryManagerTag] = useState('latest');
   const [registryManagerLoading, setRegistryManagerLoading] = useState(false);
@@ -1547,6 +1553,7 @@ export default function Home() {
     if (isContainerActive) {
       loadNetworks(getSelectedDockerServerId());
       loadVolumes(getSelectedDockerServerId());
+      loadRegistryImages();
       loadAgents();
     }
   }, [isContainerActive, containerServerId]);
@@ -1664,7 +1671,8 @@ export default function Home() {
     event.preventDefault();
     setContainerMessage('');
     const isDockerfileSource = containerRegistry === 'dockerfile';
-    setContainerCreateOutput(isDockerfileSource ? 'Starting Dockerfile build and container create...\n' : 'Pulling image and starting container create...\n');
+    const isLocalRegistrySource = containerRegistry === 'local-registry';
+    setContainerCreateOutput(isDockerfileSource ? 'Starting Dockerfile build and container create...\n' : `${isLocalRegistrySource ? 'Pulling local registry image' : 'Pulling image'} and starting container create...\n`);
     setContainerLoading(true);
 
     const ports = [];
@@ -1690,7 +1698,7 @@ export default function Home() {
         image: isDockerfileSource
           ? containerImageName.trim()
           : getContainerImageReference(containerRegistry, containerImageName),
-        image_source: isDockerfileSource ? 'dockerfile' : 'dockerhub',
+        image_source: isDockerfileSource ? 'dockerfile' : (isLocalRegistrySource ? 'local-registry' : 'dockerhub'),
         dockerfile_path: isDockerfileSource ? containerDockerfilePath.trim() : '',
         network: containerNetwork || 'bridge',
         server_id: containerServerId || LOCAL_SERVER_ID,
@@ -3699,26 +3707,56 @@ export default function Home() {
     }
   };
 
-  const getDockerImageSourceReference = (image) => {
-    if (!image) return '';
-    const repository = String(image.Repository || image.repository || '').trim();
-    const tag = String(image.Tag || image.tag || '').trim();
-    if (repository && tag && repository !== '<none>' && tag !== '<none>') {
-      return `${repository}:${tag}`;
-    }
-    return String(image.ID || image.Id || image.id || '').trim();
+  const sanitizeRegistryName = (value, fallback = '') => {
+    const safeValue = String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return safeValue || fallback;
   };
 
-  const getDockerImageSelectionKey = (image) => [
-    image?.ID || image?.Id || image?.id || '',
-    image?.Repository || image?.repository || '',
-    image?.Tag || image?.tag || '',
-  ].map((value) => String(value || '')).join('|');
+  const getRepositoryNameFromImageSource = (sourceImage) => {
+    const cleanSource = String(sourceImage || '').trim().split('@')[0];
+    if (!cleanSource) return '';
+    const lastPathPart = cleanSource.split('/').pop() || '';
+    const withoutTag = lastPathPart.includes(':')
+      ? lastPathPart.slice(0, lastPathPart.lastIndexOf(':'))
+      : lastPathPart;
+    return sanitizeRegistryName(withoutTag);
+  };
+
+  const getContainerNameFromRegistryImage = (image) => {
+    if (!image) return '';
+    const imageName = String(image.name || image.reference || '').split(':')[0].split('/').pop();
+    return sanitizeRegistryName(imageName, 'registry-container');
+  };
+
+  const handleRegistryDeployImageSelect = (imageId) => {
+    setRegistryImageId(imageId);
+    if (!imageId) {
+      setRegistryContainerName('');
+      return;
+    }
+    const selectedImage = registryImages.find((image) => String(image.id) === String(imageId));
+    const containerName = getContainerNameFromRegistryImage(selectedImage);
+    if (containerName) {
+      setRegistryContainerName(containerName);
+    }
+  };
+
+  const handleRegistryManagerImageSelect = (imageId, sourceImage) => {
+    setRegistryManagerSelectedImageId(imageId);
+    setRegistryManagerSourceImage(sourceImage);
+    const repositoryName = getRepositoryNameFromImageSource(sourceImage);
+    if (repositoryName) {
+      setRegistryManagerRepository(repositoryName);
+    }
+  };
 
   const handlePushImageToRegistry = async (event) => {
     event.preventDefault();
-    const selectedImage = images.find((image) => getDockerImageSelectionKey(image) === String(registryManagerSelectedImageId));
-    const sourceImage = getDockerImageSourceReference(selectedImage);
+    const sourceImage = registryManagerSourceImage.trim();
     setRegistryManagerLoading(true);
     setRegistryManagerMessage('');
     setRegistryManagerOutput('Tagging and pushing image to registry...');
@@ -3733,6 +3771,7 @@ export default function Home() {
       setRegistryManagerOutput(response.data.output || response.data.message || `Pushed ${response.data.target_reference || 'image'} to registry.`);
       setRegistryManagerMessage(response.data.message || `Image ${sourceImage} pushed to registry.`);
       setRegistryManagerSelectedImageId('');
+      setRegistryManagerSourceImage('');
       setRegistryManagerRepository('');
       setRegistryManagerTag('latest');
       if (Array.isArray(response.data.images)) setRegistryImages(response.data.images);
@@ -4176,12 +4215,18 @@ export default function Home() {
             onServerIdChange={(serverId) => {
               setRegistryManagerServerId(serverId === LOCAL_SERVER_ID ? '' : serverId);
               setRegistryManagerSelectedImageId('');
+              setRegistryManagerSourceImage('');
             }}
             images={images}
             imagesLoading={imagesLoading}
             imagesError={imagesError}
             selectedImageId={registryManagerSelectedImageId}
-            onSelectedImageChange={setRegistryManagerSelectedImageId}
+            sourceImage={registryManagerSourceImage}
+            onSourceImageChange={(sourceImage) => {
+              setRegistryManagerSourceImage(sourceImage);
+              setRegistryManagerSelectedImageId('');
+            }}
+            onSelectedImageChange={handleRegistryManagerImageSelect}
             repository={registryManagerRepository}
             onRepositoryChange={setRegistryManagerRepository}
             tag={registryManagerTag}
@@ -4269,6 +4314,9 @@ export default function Home() {
             volumes={volumes}
             volumesLoading={volumesLoading}
             images={images}
+            registryImages={registryImages}
+            registryImagesLoading={registryImagesLoading}
+            registryImagesError={registryImagesError}
             agents={agents}
             agentsLoading={agentsLoading}
             containerTab={containerTab}
@@ -4334,7 +4382,15 @@ export default function Home() {
             onSendShellCommand={handleSendShellCommand}
             onSendVolumeShellCommand={handleSendVolumeShellCommand}
             onContainerNameChange={setContainerName}
-            onContainerRegistryChange={setContainerRegistry}
+            onContainerRegistryChange={(registryId) => {
+              setContainerRegistry(registryId);
+              if (registryId === 'local-registry') {
+                setContainerImageName('');
+                loadRegistryImages();
+              } else if (containerRegistry === 'local-registry') {
+                setContainerImageName('');
+              }
+            }}
             onContainerImageNameChange={setContainerImageName}
             onContainerDockerfilePathChange={setContainerDockerfilePath}
             onContainerHostPortChange={setContainerHostPort}
@@ -4357,6 +4413,7 @@ export default function Home() {
               loadNetworks(serverId);
               loadVolumes(serverId);
               loadImages(serverId);
+              loadRegistryImages();
               if (containerTab === 'recyclebin') loadRecycledContainers();
             }}
             onSelectContainer={handleSelectContainer}
@@ -4511,7 +4568,7 @@ export default function Home() {
             deployMessage={registryDeployMessage}
             deployOutput={registryDeployOutput}
             onSelectedAgentChange={setRegistryAgentId}
-            onSelectedImageChange={setRegistryImageId}
+            onSelectedImageChange={handleRegistryDeployImageSelect}
             onContainerNameChange={setRegistryContainerName}
             onRunArgsChange={setRegistryRunArgs}
             onRegistryUsernameChange={setRegistryUsername}
@@ -6325,6 +6382,9 @@ function CreateContainerPanel({
   volumes,
   volumesLoading,
   images,
+  registryImages,
+  registryImagesLoading,
+  registryImagesError,
   agents,
   agentsLoading,
   containerTab,
@@ -6470,6 +6530,8 @@ function CreateContainerPanel({
   const containerStatus = selectedContainer?.Status || 'Unknown';
   const containerImage = selectedContainer?.Image || 'Unknown';
   const isDockerfileSource = containerRegistry === 'dockerfile';
+  const isLocalRegistrySource = containerRegistry === 'local-registry';
+  const getRegistryImageReference = (image) => image?.reference || `${image?.name || ''}:${image?.tag || 'latest'}`;
   const canCreateContainer = canOperate('create_container');
   const canDeleteContainer = canOperate('delete_container');
   const canConnectContainer = canOperate('connect_container');
@@ -6662,14 +6724,36 @@ function CreateContainerPanel({
             </label>
 
             <label>
-              <span>{isDockerfileSource ? 'Image tag' : 'Image name'}</span>
-              <input
-                type="text"
-                value={containerImageName}
-                onChange={(event) => onContainerImageNameChange(event.target.value)}
-                placeholder={isDockerfileSource ? 'example: my-app:latest' : 'example: nginx:latest'}
-                disabled={containerLoading}
-              />
+              <span>{isDockerfileSource ? 'Image tag' : (isLocalRegistrySource ? 'Local registry image' : 'Image name')}</span>
+              {isLocalRegistrySource ? (
+                <>
+                  <select
+                    value={containerImageName}
+                    onChange={(event) => onContainerImageNameChange(event.target.value)}
+                    disabled={containerLoading || registryImagesLoading || !registryImages.length}
+                  >
+                    <option value="">{registryImagesLoading ? 'Loading registry images...' : 'Choose registry image'}</option>
+                    {registryImages.map((image) => {
+                      const reference = getRegistryImageReference(image);
+                      return (
+                        <option value={reference} key={image.id || reference}>
+                          {reference}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {registryImagesError ? <small className="field-help error">{registryImagesError}</small> : null}
+                  {!registryImagesLoading && !registryImages.length ? <small className="field-help">No registry images found. Push an image from Images Registry first.</small> : null}
+                </>
+              ) : (
+                <input
+                  type="text"
+                  value={containerImageName}
+                  onChange={(event) => onContainerImageNameChange(event.target.value)}
+                  placeholder={isDockerfileSource ? 'example: my-app:latest' : 'example: nginx:latest'}
+                  disabled={containerLoading}
+                />
+              )}
             </label>
           </div>
 
@@ -7742,6 +7826,9 @@ function getDeploymentNetworkLabel(network) {
 function getContainerImageReference(registryId, imageName) {
   const normalizedImage = imageName.trim();
   if (registryId === 'dockerfile') {
+    return normalizedImage;
+  }
+  if (registryId === 'local-registry') {
     return normalizedImage;
   }
 
@@ -9279,6 +9366,8 @@ function ImagesRegistryPanel({
   imagesLoading,
   imagesError,
   selectedImageId,
+  sourceImage,
+  onSourceImageChange,
   onSelectedImageChange,
   repository,
   onRepositoryChange,
@@ -9329,17 +9418,26 @@ function ImagesRegistryPanel({
     return String(image.ID || image.Id || image.id || '').trim();
   };
   const selectedImage = images.find((image) => getImageKey(image) === selectedImageId);
-  const selectedImageSource = getImageSource(selectedImage);
-  const suggestedRepository = selectedImage
-    ? String(selectedImage.Repository || '').split('/').pop().replace(/[^a-zA-Z0-9_.-]+/g, '-').toLowerCase()
+  const selectedImageSource = String(sourceImage || '').trim() || getImageSource(selectedImage);
+  const suggestedRepository = selectedImageSource
+    ? selectedImageSource.split('@')[0].split('/').pop().replace(/:[^:]*$/, '').replace(/[^a-zA-Z0-9_.-]+/g, '-').toLowerCase()
     : '';
   const targetRepository = repository.trim() || '<repository>';
   const targetTag = tag.trim() || 'latest';
   const targetReference = `registry-host/${targetRepository}:${targetTag}`;
+  const isErrorMessage = (value) => value.toLowerCase().includes('unable') || value.toLowerCase().includes('error');
+  const previousLoadingRef = useRef(false);
 
   useEffect(() => {
     if (output) setOutputVisible(true);
   }, [output]);
+
+  useEffect(() => {
+    if (previousLoadingRef.current && !loading && message && !isErrorMessage(message)) {
+      setOutputVisible(false);
+    }
+    previousLoadingRef.current = loading;
+  }, [loading, message]);
 
   return (
     <section className="home-panel images-registry-panel">
@@ -9389,8 +9487,9 @@ function ImagesRegistryPanel({
               <tbody>
                 {images.length ? images.map((image) => {
                   const key = getImageKey(image);
+                  const imageSource = getImageSource(image);
                   return (
-                    <tr className={key === selectedImageId ? 'selected' : ''} key={key} onClick={() => onSelectedImageChange(key)}>
+                    <tr className={key === selectedImageId ? 'selected' : ''} key={key} onClick={() => onSelectedImageChange(key, imageSource)}>
                       <td>{image.Repository || image.repository || '<none>'}</td>
                       <td>{image.Tag || image.tag || '<none>'}</td>
                       <td>{String(image.ID || image.Id || '').replace(/^sha256:/, '').slice(0, 18)}</td>
@@ -9411,7 +9510,7 @@ function ImagesRegistryPanel({
           <form className="images-registry-form" onSubmit={onPush}>
             <label>
               <span>Source image</span>
-              <input value={selectedImageSource} readOnly placeholder="Select an image" />
+              <input value={sourceImage} onChange={(event) => onSourceImageChange(event.target.value)} placeholder="Select or type an image, example: nginx:latest" disabled={loading} />
             </label>
             <label>
               <span>Repository/name</span>
@@ -9426,7 +9525,7 @@ function ImagesRegistryPanel({
               <code>docker tag {selectedImageSource || '<source-image>'} {targetReference}</code>
               <code>docker push {targetReference}</code>
             </div>
-            {message ? <p className={message.toLowerCase().includes('unable') || message.toLowerCase().includes('error') ? 'build-message error' : 'build-message'}>{message}</p> : null}
+            {message ? <p className={isErrorMessage(message) ? 'build-message error' : 'build-message'}>{message}</p> : null}
             <div className="build-actions">
               <button type="submit" className="home-primary-button" disabled={!canManageRegistry || loading || !selectedImageSource || !repository.trim() || !tag.trim()}>
                 {loading ? 'Working...' : 'Tag & Push'}

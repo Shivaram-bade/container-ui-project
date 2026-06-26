@@ -5382,7 +5382,7 @@ function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose, ca
         )}
       </div>
       <button type="button" className="notification-view-all" onClick={onOpenAll}>
-        View all notifications
+        View all notifications   
       </button>
     </section>
   );

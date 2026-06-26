@@ -4788,10 +4788,10 @@ function KubernetesPlaceholderPanel({ action }) {
     return <KubernetesServiceCommandPanel />;
   }
   if (action.id === 'k8s-configmap') {
-    return <KubernetesLiteralCommandPanel resourceType="configmap" />;
+    return <KubernetesLiteralCommandPanel key="configmap-literals" resourceType="configmap" />;
   }
   if (action.id === 'k8s-secrets') {
-    return <KubernetesLiteralCommandPanel resourceType="secret" />;
+    return <KubernetesLiteralCommandPanel key="secret-literals" resourceType="secret" />;
   }
 
   return (

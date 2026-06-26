@@ -5387,7 +5387,7 @@ function NotificationBellPopup({ notifications, onOpenAll, onRemove, onClose, ca
     </section>
   );
 }
-
+ 
 function NotificationsPanel({ notifications, onRemove, onClear, onClose, canDelete = false }) {
   return (
     <section className="home-panel notifications-panel">

@@ -5735,7 +5735,7 @@ function KubernetesAuthenticationPanel() {
           <div className="k8s-auth-section">
             <div className="k8s-auth-section-heading">
               <strong>Certificate Options</strong>
-              <span>Certificate name and lifetime</span>
+              <span>Certificate Name and lifetime</span>
             </div>
             <div className="k8s-auth-form-grid">
               <label>

@@ -283,3 +283,67 @@ class Deployment(models.Model):
     class Meta:
         unique_together = ('owner', 'name')
         ordering = ['name']
+
+
+class KubernetesAuthUser(models.Model):
+    """Certificate-backed Kubernetes user managed by the controller."""
+    STATUS_ACTIVE = 'active'
+    STATUS_FAILED = 'failed'
+    STATUS_EXPIRED = 'expired'
+    STATUS_REVOKED = 'revoked'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_FAILED, 'Failed'),
+        (STATUS_EXPIRED, 'Expired'),
+        (STATUS_REVOKED, 'Revoked'),
+    ]
+
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='kubernetes_auth_users')
+    username = models.CharField(max_length=150)
+    namespace = models.CharField(max_length=150, default='default')
+    role_name = models.CharField(max_length=150)
+    role_binding_name = models.CharField(max_length=180, blank=True)
+    certificate_name = models.CharField(max_length=150)
+    csr_name = models.CharField(max_length=180, blank=True)
+    expiration_days = models.PositiveIntegerField(default=90)
+    certificate_expiry = models.DateTimeField(null=True, blank=True)
+    certificate_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    permissions = models.JSONField(default=list, blank=True)
+    resources = models.JSONField(default=list, blank=True)
+    can_i_results = models.JSONField(default=list, blank=True)
+    current_context = models.CharField(max_length=255, blank=True)
+    authentication_status = models.CharField(max_length=120, blank=True)
+    certificate_pem = models.TextField(blank=True)
+    private_key_pem = models.TextField(blank=True)
+    kubeconfig = models.TextField(blank=True)
+    error_message = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='created_kubernetes_auth_users')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.username} ({self.namespace})'
+
+    class Meta:
+        unique_together = (
+            ('owner', 'username'),
+            ('owner', 'namespace', 'role_name'),
+        )
+        ordering = ['username']
+
+
+class KubernetesAuthAuditLog(models.Model):
+    """Audit trail for certificate-backed Kubernetes user management."""
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='kubernetes_auth_audit_logs')
+    actor = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='kubernetes_auth_audit_events')
+    auth_user = models.ForeignKey(KubernetesAuthUser, null=True, blank=True, on_delete=models.SET_NULL, related_name='audit_logs')
+    action = models.CharField(max_length=80)
+    message = models.TextField(blank=True)
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'{self.action} at {self.created_at}'
+
+    class Meta:
+        ordering = ['-created_at']

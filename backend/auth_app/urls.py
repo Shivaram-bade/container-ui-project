@@ -44,4 +44,7 @@ urlpatterns = [
     path('build-image-stop/<str:job_id>/', views.stop_build_image, name='stop_build_image'),
     path('network/', views.network, name='network'),
     path('volume/', views.volume, name='volume'),
+    path('kubernetes-auth-users/', views.kubernetes_auth_users, name='kubernetes_auth_users'),
+    path('kubernetes-auth-users/<int:auth_user_id>/', views.kubernetes_auth_user_detail, name='kubernetes_auth_user_detail'),
+    path('kubernetes-auth-users/<int:auth_user_id>/download/<str:artifact>/', views.kubernetes_auth_user_download, name='kubernetes_auth_user_download'),
 ]

@@ -469,6 +469,26 @@ export const authService = {
       },
     });
   },
+
+  listKubernetesAuthUsers: () => {
+    return api.get('/api/auth/kubernetes-auth-users/');
+  },
+
+  createKubernetesAuthUser: (userData) => {
+    return api.post('/api/auth/kubernetes-auth-users/', userData);
+  },
+
+  getKubernetesAuthUser: (authUserId) => {
+    return api.get(`/api/auth/kubernetes-auth-users/${authUserId}/`);
+  },
+
+  deleteKubernetesAuthUser: (authUserId) => {
+    return api.delete(`/api/auth/kubernetes-auth-users/${authUserId}/`);
+  },
+
+  downloadKubernetesAuthArtifact: (authUserId, artifact) => {
+    return api.get(`/api/auth/kubernetes-auth-users/${authUserId}/download/${artifact}/`);
+  },
 };
 
 export default api;

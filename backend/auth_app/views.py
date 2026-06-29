@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 
 from .models import (
     Agent, AgentCommand, Deployment, DeploymentJob, RBACGroup, RecycledContainer, RegistryImage,
-    UserProfile, LoginHistory
+    UserProfile, LoginHistory, KubernetesAuthUser, KubernetesAuthAuditLog
 )
 from .serializers import (
     RegisterSerializer, LoginSerializer, UserSerializer,
@@ -310,6 +310,408 @@ def run_docker_command(command, timeout=120):
     }
 
 
+KUBERNETES_AUTH_VERBS = {'get', 'list', 'watch', 'create', 'update', 'patch', 'delete'}
+KUBERNETES_AUTH_RESOURCES = {
+    'pods': 'Pods',
+    'deployments': 'Deployments',
+    'services': 'Services',
+    'configmaps': 'ConfigMaps',
+    'secrets': 'Secrets',
+    'jobs': 'Jobs',
+    'cronjobs': 'CronJobs',
+    'persistentvolumeclaims': 'PVC',
+    'ingresses': 'Ingress',
+    'customresourcedefinitions': 'Custom Resources',
+}
+KUBERNETES_AUTH_EXPIRATION_DAYS = {30, 90, 180, 365}
+KUBERNETES_SAFE_NAME_RE = re.compile(r'^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$')
+
+
+def run_kubernetes_auth_command(command, timeout=120, env=None):
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env or os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = ((exc.stdout or '') + '\n' + (exc.stderr or '')).strip()
+        return {
+            'success': False,
+            'return_code': None,
+            'output': clean_terminal_output(output) or f'Operation timed out after {timeout} seconds.',
+        }
+    except OSError as exc:
+        return {
+            'success': False,
+            'return_code': None,
+            'output': str(exc),
+        }
+
+    output = clean_terminal_output((result.stdout + '\n' + result.stderr).strip())
+    return {
+        'success': result.returncode == 0,
+        'return_code': result.returncode,
+        'output': output,
+    }
+
+
+def normalize_kubernetes_auth_name(value, field_name):
+    name = str(value or '').strip().lower()
+    if not name:
+        raise ValueError(f'{field_name} is required.')
+    if not KUBERNETES_SAFE_NAME_RE.match(name):
+        raise ValueError(f'{field_name} must use lowercase letters, numbers, and hyphens.')
+    return name
+
+
+def normalize_kubernetes_auth_payload(data):
+    username = normalize_kubernetes_auth_name(data.get('username'), 'Username')
+    namespace = normalize_kubernetes_auth_name(data.get('namespace') or 'default', 'Namespace')
+    role_name = normalize_kubernetes_auth_name(data.get('role_name') or 'developer-role', 'Role name')
+    certificate_name = normalize_kubernetes_auth_name(data.get('certificate_name') or username, 'Certificate name')
+    expiration_days = int(data.get('expiration_days') or 90)
+    if expiration_days not in KUBERNETES_AUTH_EXPIRATION_DAYS:
+        raise ValueError('Expiration must be 30, 90, 180, or 365 days.')
+
+    permissions = [
+        str(verb or '').strip().lower()
+        for verb in data.get('permissions', [])
+        if str(verb or '').strip().lower() in KUBERNETES_AUTH_VERBS
+    ]
+    resources = [
+        str(resource or '').strip().lower()
+        for resource in data.get('resources', [])
+        if str(resource or '').strip().lower() in KUBERNETES_AUTH_RESOURCES
+    ]
+    permissions = list(dict.fromkeys(permissions))
+    resources = list(dict.fromkeys(resources))
+    if not permissions:
+        raise ValueError('Select at least one permission.')
+    if not resources:
+        raise ValueError('Select at least one resource.')
+
+    return {
+        'username': username,
+        'namespace': namespace,
+        'role_name': role_name,
+        'certificate_name': certificate_name,
+        'expiration_days': expiration_days,
+        'permissions': permissions,
+        'resources': resources,
+    }
+
+
+def kubernetes_auth_user_payload(auth_user, include_secrets=False, include_audit=False):
+    now = timezone.now()
+    expiry = auth_user.certificate_expiry
+    status_value = auth_user.certificate_status
+    if expiry and expiry <= now and status_value == KubernetesAuthUser.STATUS_ACTIVE:
+        status_value = KubernetesAuthUser.STATUS_EXPIRED
+    expiry_days_remaining = None
+    if expiry:
+        expiry_days_remaining = max(0, (expiry - now).days)
+
+    payload = {
+        'id': auth_user.id,
+        'username': auth_user.username,
+        'namespace': auth_user.namespace,
+        'role': auth_user.role_name,
+        'role_name': auth_user.role_name,
+        'role_binding': auth_user.role_binding_name,
+        'certificate_name': auth_user.certificate_name,
+        'certificate_status': status_value,
+        'certificate_expiry': auth_user.certificate_expiry.isoformat() if auth_user.certificate_expiry else '',
+        'certificate_expiry_days_remaining': expiry_days_remaining,
+        'permissions': auth_user.permissions or [],
+        'resources': auth_user.resources or [],
+        'allowed_verbs': auth_user.permissions or [],
+        'allowed_resources': auth_user.resources or [],
+        'can_access': bool(auth_user.can_i_results) and all(item.get('allowed') for item in auth_user.can_i_results),
+        'can_i_results': auth_user.can_i_results or [],
+        'current_context': auth_user.current_context,
+        'authentication_status': auth_user.authentication_status,
+        'created_date': auth_user.created_at.isoformat() if auth_user.created_at else '',
+        'created_at': auth_user.created_at.isoformat() if auth_user.created_at else '',
+        'updated_at': auth_user.updated_at.isoformat() if auth_user.updated_at else '',
+        'error_message': auth_user.error_message,
+    }
+    if include_secrets:
+        payload.update({
+            'certificate_pem': auth_user.certificate_pem,
+            'private_key_pem': auth_user.private_key_pem,
+            'kubeconfig': auth_user.kubeconfig,
+        })
+    if include_audit:
+        payload['audit_log'] = [
+            {
+                'action': log.action,
+                'message': log.message,
+                'details': log.details or {},
+                'created_at': log.created_at.isoformat() if log.created_at else '',
+                'actor': log.actor.username if log.actor else '',
+            }
+            for log in auth_user.audit_logs.all()[:30]
+        ]
+    return payload
+
+
+def log_kubernetes_auth_event(owner, actor, action, message='', auth_user=None, details=None):
+    try:
+        KubernetesAuthAuditLog.objects.create(
+            owner=owner,
+            actor=actor if getattr(actor, 'is_authenticated', False) else None,
+            auth_user=auth_user,
+            action=action,
+            message=message,
+            details=details or {},
+        )
+    except Exception:
+        pass
+
+
+def kubernetes_auth_download_payload(auth_user, artifact):
+    if artifact == 'certificate':
+        return f'{auth_user.username}.crt', auth_user.certificate_pem
+    if artifact == 'private-key':
+        return f'{auth_user.username}.key', auth_user.private_key_pem
+    if artifact == 'kubeconfig':
+        return f'{auth_user.username}-kubeconfig.yaml', auth_user.kubeconfig
+    raise ValueError('Unknown download type.')
+
+
+def delete_kubernetes_auth_resources(auth_user):
+    namespace = auth_user.namespace
+    if auth_user.role_binding_name:
+        run_kubernetes_auth_command(['kubectl', 'delete', 'rolebinding', auth_user.role_binding_name, '--namespace', namespace, '--ignore-not-found=true'], timeout=45)
+    if auth_user.role_name:
+        run_kubernetes_auth_command(['kubectl', 'delete', 'role', auth_user.role_name, '--namespace', namespace, '--ignore-not-found=true'], timeout=45)
+    if auth_user.csr_name:
+        run_kubernetes_auth_command(['kubectl', 'delete', 'csr', auth_user.csr_name, '--ignore-not-found=true'], timeout=45)
+
+
+def create_kubernetes_certificate_user(owner, actor, data):
+    steps = [
+        {'key': 'private_key', 'label': 'Generating private key...', 'status': 'pending'},
+        {'key': 'csr', 'label': 'Generating CSR...', 'status': 'pending'},
+        {'key': 'encode', 'label': 'Encoding CSR...', 'status': 'pending'},
+        {'key': 'submit', 'label': 'Submitting CSR...', 'status': 'pending'},
+        {'key': 'approve', 'label': 'Approving certificate...', 'status': 'pending'},
+        {'key': 'wait', 'label': 'Waiting for signed certificate...', 'status': 'pending'},
+        {'key': 'role', 'label': 'Creating Role...', 'status': 'pending'},
+        {'key': 'rolebinding', 'label': 'Creating RoleBinding...', 'status': 'pending'},
+        {'key': 'kubeconfig', 'label': 'Updating kubeconfig...', 'status': 'pending'},
+        {'key': 'validate', 'label': 'Validating access...', 'status': 'pending'},
+        {'key': 'completed', 'label': 'Completed', 'status': 'pending'},
+    ]
+    step_index = {step['key']: index for index, step in enumerate(steps)}
+
+    def mark(key, step_status='complete'):
+        steps[step_index[key]]['status'] = step_status
+
+    created = {'csr': '', 'role': '', 'rolebinding': ''}
+
+    def fail(message, auth_user=None, rollback=True):
+        if rollback:
+            if created['rolebinding']:
+                run_kubernetes_auth_command(['kubectl', 'delete', 'rolebinding', created['rolebinding'], '--namespace', data['namespace'], '--ignore-not-found=true'], timeout=45)
+            if created['role']:
+                run_kubernetes_auth_command(['kubectl', 'delete', 'role', created['role'], '--namespace', data['namespace'], '--ignore-not-found=true'], timeout=45)
+            if created['csr']:
+                run_kubernetes_auth_command(['kubectl', 'delete', 'csr', created['csr'], '--ignore-not-found=true'], timeout=45)
+        if auth_user:
+            auth_user.certificate_status = KubernetesAuthUser.STATUS_FAILED
+            auth_user.error_message = message
+            auth_user.save(update_fields=['certificate_status', 'error_message', 'updated_at'])
+            log_kubernetes_auth_event(owner, actor, 'create_failed', message, auth_user, {'steps': steps})
+        return {'success': False, 'error': message, 'steps': steps}
+
+    if KubernetesAuthUser.objects.filter(owner=owner, username=data['username']).exists():
+        return fail('Username already exists.', rollback=False)
+    if KubernetesAuthUser.objects.filter(owner=owner, namespace=data['namespace'], role_name=data['role_name']).exists():
+        return fail('Role name already exists in this namespace.', rollback=False)
+
+    role_check = run_kubernetes_auth_command(['kubectl', 'get', 'role', data['role_name'], '--namespace', data['namespace']], timeout=30)
+    if role_check['success']:
+        return fail('Role name already exists in Kubernetes for this namespace.', rollback=False)
+
+    csr_name = f"vitel-{data['username']}-{uuid.uuid4().hex[:8]}"
+    role_binding_name = f"{data['role_name']}-binding-{data['username']}"
+    context_name = f"{data['username']}@{data['namespace']}"
+    certificate_expiry = timezone.now() + timedelta(days=data['expiration_days'])
+
+    auth_user = KubernetesAuthUser.objects.create(
+        owner=owner,
+        created_by=actor if getattr(actor, 'is_authenticated', False) else None,
+        username=data['username'],
+        namespace=data['namespace'],
+        role_name=data['role_name'],
+        role_binding_name=role_binding_name,
+        certificate_name=data['certificate_name'],
+        csr_name=csr_name,
+        expiration_days=data['expiration_days'],
+        certificate_expiry=certificate_expiry,
+        permissions=data['permissions'],
+        resources=data['resources'],
+        current_context=context_name,
+        authentication_status='Creating',
+    )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix='vitel-k8s-auth-') as temp_dir:
+            temp_path = Path(temp_dir)
+            key_path = temp_path / f"{data['username']}.key"
+            csr_path = temp_path / f"{data['username']}.csr"
+            cert_path = temp_path / f"{data['username']}.crt"
+            csr_json_path = temp_path / 'csr.json'
+            kubeconfig_path = temp_path / 'kubeconfig'
+
+            result = run_kubernetes_auth_command(['openssl', 'genrsa', '-out', str(key_path), '2048'], timeout=45)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to generate private key.', auth_user)
+            mark('private_key')
+
+            result = run_kubernetes_auth_command([
+                'openssl', 'req', '-new', '-key', str(key_path), '-out', str(csr_path),
+                '-subj', f"/CN={data['username']}/O={data['namespace']}",
+            ], timeout=45)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to generate certificate signing request.', auth_user)
+            mark('csr')
+
+            request_b64 = base64.b64encode(csr_path.read_bytes()).decode('ascii')
+            mark('encode')
+
+            csr_object = {
+                'apiVersion': 'certificates.k8s.io/v1',
+                'kind': 'CertificateSigningRequest',
+                'metadata': {'name': csr_name},
+                'spec': {
+                    'request': request_b64,
+                    'signerName': 'kubernetes.io/kube-apiserver-client',
+                    'expirationSeconds': data['expiration_days'] * 24 * 60 * 60,
+                    'usages': ['client auth'],
+                },
+            }
+            csr_json_path.write_text(json.dumps(csr_object), encoding='utf-8')
+            result = run_kubernetes_auth_command(['kubectl', 'apply', '-f', str(csr_json_path)], timeout=60)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to submit certificate signing request.', auth_user)
+            created['csr'] = csr_name
+            mark('submit')
+
+            result = run_kubernetes_auth_command(['kubectl', 'certificate', 'approve', csr_name], timeout=60)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to approve certificate signing request.', auth_user)
+            mark('approve')
+
+            certificate_b64 = ''
+            for _ in range(30):
+                result = run_kubernetes_auth_command(['kubectl', 'get', 'csr', csr_name, '-o', 'jsonpath={.status.certificate}'], timeout=30)
+                if result['success'] and result['output'].strip():
+                    certificate_b64 = result['output'].strip()
+                    break
+                time.sleep(1)
+            if not certificate_b64:
+                return fail('Certificate was approved, but Kubernetes did not issue a signed certificate in time.', auth_user)
+            cert_path.write_bytes(base64.b64decode(certificate_b64))
+            mark('wait')
+
+            result = run_kubernetes_auth_command([
+                'kubectl', 'create', 'role', data['role_name'],
+                '--namespace', data['namespace'],
+                '--verb', ','.join(data['permissions']),
+                '--resource', ','.join(data['resources']),
+            ], timeout=60)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to create Kubernetes Role.', auth_user)
+            created['role'] = data['role_name']
+            mark('role')
+
+            result = run_kubernetes_auth_command([
+                'kubectl', 'create', 'rolebinding', role_binding_name,
+                '--namespace', data['namespace'],
+                '--role', data['role_name'],
+                '--user', data['username'],
+            ], timeout=60)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to create Kubernetes RoleBinding.', auth_user)
+            created['rolebinding'] = role_binding_name
+            mark('rolebinding')
+
+            config_result = run_kubernetes_auth_command(['kubectl', 'config', 'view', '--raw'], timeout=30)
+            if not config_result['success']:
+                return fail(config_result['output'] or 'Unable to read Kubernetes configuration.', auth_user)
+            kubeconfig_path.write_text(config_result['output'], encoding='utf-8')
+
+            current_context_result = run_kubernetes_auth_command(['kubectl', 'config', 'current-context'], timeout=30)
+            cluster_name = current_context_result['output'].strip() if current_context_result['success'] else ''
+            if cluster_name:
+                cluster_lookup = run_kubernetes_auth_command(['kubectl', 'config', 'view', '-o', f"jsonpath={{.contexts[?(@.name==\"{cluster_name}\")].context.cluster}}"], timeout=30)
+                if cluster_lookup['success'] and cluster_lookup['output'].strip():
+                    cluster_name = cluster_lookup['output'].strip()
+            if not cluster_name:
+                cluster_name = 'default'
+
+            result = run_kubernetes_auth_command([
+                'kubectl', '--kubeconfig', str(kubeconfig_path), 'config', 'set-credentials', data['username'],
+                f'--client-certificate={cert_path}', f'--client-key={key_path}', '--embed-certs=true',
+            ], timeout=45)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to set kubeconfig credentials.', auth_user)
+
+            result = run_kubernetes_auth_command([
+                'kubectl', '--kubeconfig', str(kubeconfig_path), 'config', 'set-context', context_name,
+                f'--cluster={cluster_name}', f'--user={data["username"]}', f'--namespace={data["namespace"]}',
+            ], timeout=45)
+            if not result['success']:
+                return fail(result['output'] or 'Unable to set kubeconfig context.', auth_user)
+
+            run_kubernetes_auth_command(['kubectl', '--kubeconfig', str(kubeconfig_path), 'config', 'use-context', context_name], timeout=30)
+            mark('kubeconfig')
+
+            can_i_results = []
+            for verb in data['permissions']:
+                for resource in data['resources'][:4]:
+                    result = run_kubernetes_auth_command([
+                        'kubectl', '--kubeconfig', str(kubeconfig_path), 'auth', 'can-i', verb, resource,
+                        '--namespace', data['namespace'],
+                    ], timeout=30)
+                    output = result['output'].strip().lower()
+                    can_i_results.append({
+                        'verb': verb,
+                        'resource': resource,
+                        'allowed': result['success'] and output == 'yes',
+                        'result': output or ('yes' if result['success'] else 'no'),
+                    })
+            whoami = run_kubernetes_auth_command(['kubectl', '--kubeconfig', str(kubeconfig_path), 'auth', 'whoami'], timeout=30)
+            if not whoami['success']:
+                return fail(whoami['output'] or 'Kubernetes user identity validation failed.', auth_user)
+            mark('validate')
+
+            private_key_pem = key_path.read_text(encoding='utf-8')
+            certificate_pem = cert_path.read_text(encoding='utf-8')
+            kubeconfig = kubeconfig_path.read_text(encoding='utf-8')
+            auth_user.private_key_pem = private_key_pem
+            auth_user.certificate_pem = certificate_pem
+            auth_user.kubeconfig = kubeconfig
+            auth_user.can_i_results = can_i_results
+            auth_user.authentication_status = 'Verified'
+            auth_user.certificate_status = KubernetesAuthUser.STATUS_ACTIVE
+            auth_user.error_message = ''
+            auth_user.save()
+            mark('completed')
+            log_kubernetes_auth_event(owner, actor, 'create', 'Kubernetes user created successfully.', auth_user, {'steps': steps})
+            return {
+                'success': True,
+                'steps': steps,
+                'user': kubernetes_auth_user_payload(auth_user, include_secrets=True, include_audit=True),
+            }
+    except (OSError, ValueError, binascii.Error) as exc:
+        return fail(str(exc), auth_user)
 
 def clean_volume_browser_path(value):
     raw_path = str(value or '').replace('\\', '/').strip()
@@ -7369,6 +7771,95 @@ def stop_build_image(request, job_id):
             'return_code': job['return_code'],
             'stopped': job.get('stopped', False),
         })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def kubernetes_auth_users(request):
+    """Create or list certificate-backed Kubernetes users."""
+    if request.method == 'GET':
+        users = KubernetesAuthUser.objects.filter(owner=request.user).order_by('username')
+        audit_log = KubernetesAuthAuditLog.objects.filter(owner=request.user).select_related('actor', 'auth_user')[:40]
+        return Response({
+            'success': True,
+            'users': [kubernetes_auth_user_payload(auth_user) for auth_user in users],
+            'audit_log': [
+                {
+                    'action': log.action,
+                    'message': log.message,
+                    'username': log.auth_user.username if log.auth_user else '',
+                    'actor': log.actor.username if log.actor else '',
+                    'created_at': log.created_at.isoformat() if log.created_at else '',
+                }
+                for log in audit_log
+            ],
+            'resources': [
+                {'value': value, 'label': label}
+                for value, label in KUBERNETES_AUTH_RESOURCES.items()
+            ],
+            'verbs': sorted(KUBERNETES_AUTH_VERBS),
+        })
+
+    try:
+        payload = normalize_kubernetes_auth_payload(request.data)
+    except (TypeError, ValueError) as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = create_kubernetes_certificate_user(request.user, request.user, payload)
+    return Response(
+        result,
+        status=status.HTTP_201_CREATED if result.get('success') else status.HTTP_400_BAD_REQUEST,
+    )
+
+
+@api_view(['GET', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def kubernetes_auth_user_detail(request, auth_user_id):
+    """Read or delete one certificate-backed Kubernetes user."""
+    try:
+        auth_user = KubernetesAuthUser.objects.get(id=auth_user_id, owner=request.user)
+    except KubernetesAuthUser.DoesNotExist:
+        return Response({'success': False, 'error': 'Kubernetes auth user not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        return Response({
+            'success': True,
+            'user': kubernetes_auth_user_payload(auth_user, include_secrets=False, include_audit=True),
+        })
+
+    delete_kubernetes_auth_resources(auth_user)
+    log_kubernetes_auth_event(request.user, request.user, 'delete', 'Kubernetes user deleted.', auth_user, {
+        'username': auth_user.username,
+        'namespace': auth_user.namespace,
+        'role': auth_user.role_name,
+    })
+    auth_user.delete()
+    return Response({'success': True})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def kubernetes_auth_user_download(request, auth_user_id, artifact):
+    """Return generated Kubernetes authentication artifacts as JSON content."""
+    try:
+        auth_user = KubernetesAuthUser.objects.get(id=auth_user_id, owner=request.user)
+    except KubernetesAuthUser.DoesNotExist:
+        return Response({'success': False, 'error': 'Kubernetes auth user not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        filename, content = kubernetes_auth_download_payload(auth_user, artifact)
+    except ValueError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not content:
+        return Response({'success': False, 'error': 'Requested file is not available.'}, status=status.HTTP_404_NOT_FOUND)
+
+    log_kubernetes_auth_event(request.user, request.user, f'download_{artifact}', f'Downloaded {artifact}.', auth_user)
+    return Response({
+        'success': True,
+        'filename': filename,
+        'content': content,
+    })
 
 
 

@@ -967,6 +967,12 @@ export default function Home() {
     handleActionSelect(dashboardAction);
   };
 
+  const handleBackToKubernetesHome = () => {
+    const firstAction = kubernetesActions[0];
+    setActiveAction(firstAction);
+    navigate(firstAction.path);
+  };
+
   const handleOpenUserProfile = () => {
     if (canSeeAction(userProfileAction)) handleActionSelect(userProfileAction);
   };
@@ -1681,6 +1687,15 @@ export default function Home() {
     setEnvironmentSelectorOpen(false);
     setActiveAction(firstAction);
     navigate(firstAction.path, { replace: true });
+  };
+
+  const handleSwitchEnvironment = () => {
+    setBellOpen(false);
+    if (selectedEnvironment === 'kubernetes') {
+      handleSelectDockerEnvironment();
+      return;
+    }
+    handleSelectKubernetesEnvironment();
   };
 
   const handleCreateContainer = async (event) => {
@@ -3887,11 +3902,19 @@ export default function Home() {
 
         <nav className="home-nav" aria-label="Application navigation">
           {selectedEnvironment === 'kubernetes' ? (
-            kubernetesActions.map((action) => renderNavItem(
-              action,
-              activeAction.id === action.id,
-              () => handleActionSelect(action)
-            ))
+            <>
+              {kubernetesActions.map((action) => renderNavItem(
+                action,
+                activeAction.id === action.id,
+                () => handleActionSelect(action)
+              ))}
+              {canViewNotifications && renderNavItem(
+                notificationsAction,
+                isNotificationsActive,
+                handleOpenNotifications,
+                unreadNotificationCount > 0
+              )}
+            </>
           ) : (
           <>
           {renderNavItem(
@@ -4035,7 +4058,11 @@ export default function Home() {
             <p>{activeAction.description}</p>
           </div>
           <div className="home-header-actions">
-            {selectedEnvironment === 'docker' && canViewNotifications ? <div className="notification-bell-wrap">
+            <button type="button" className="environment-switch-button" onClick={handleSwitchEnvironment}>
+              <span>{selectedEnvironment === 'kubernetes' ? 'Docker' : 'K8s'}</span>
+              <strong>{selectedEnvironment === 'kubernetes' ? 'Switch to Docker' : 'Switch to K8s'}</strong>
+            </button>
+            {canViewNotifications ? <div className="notification-bell-wrap">
               <button
                 type="button"
                 className={`notification-bell-button ${bellOpen ? 'active' : ''}`}
@@ -4056,7 +4083,7 @@ export default function Home() {
                 />
               ) : null}
             </div> : null}
-            <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={selectedEnvironment === 'kubernetes' || !canSeeAction(userProfileAction)}>
+            <button type="button" className="home-user-card" onClick={handleOpenUserProfile} disabled={!canSeeAction(userProfileAction)}>
               <span className="home-user-avatar" aria-hidden="true">{(user?.name || user?.username || 'U').slice(0, 1).toUpperCase()}</span>
               <span className="home-user-copy"><span></span>
               <strong>{user?.name || user?.username || 'Signed-in user'}</strong>
@@ -4065,7 +4092,32 @@ export default function Home() {
           </div>
         </header>
 
-        {selectedEnvironment === 'kubernetes' ? (
+        {isNotificationsActive ? (
+          <DashboardBackContext.Provider value={null}>
+            <NotificationsPanel
+              notifications={notifications}
+              onRemove={handleRemoveNotification}
+              onClear={handleClearNotifications}
+              onClose={selectedEnvironment === 'kubernetes' ? handleBackToKubernetesHome : handleBackToDashboard}
+              canDelete={canDeleteNotifications}
+            />
+          </DashboardBackContext.Provider>
+        ) : isUserProfileActive ? (
+          <DashboardBackContext.Provider value={selectedEnvironment === 'kubernetes' ? handleBackToKubernetesHome : handleBackToDashboard}>
+            <UserProfilePanel
+              user={user}
+              currentPassword={currentPassword}
+              newPassword={newPassword}
+              confirmNewPassword={confirmNewPassword}
+              passwordLoading={passwordLoading}
+              passwordMessage={passwordMessage}
+              onCurrentPasswordChange={setCurrentPassword}
+              onNewPasswordChange={setNewPassword}
+              onConfirmNewPasswordChange={setConfirmNewPassword}
+              onChangePassword={handleChangePassword}
+            />
+          </DashboardBackContext.Provider>
+        ) : selectedEnvironment === 'kubernetes' ? (
           <KubernetesPlaceholderPanel action={activeAction} />
         ) : (
         <DashboardBackContext.Provider value={isDashboardActive || isNotificationsActive ? null : handleBackToDashboard}>
@@ -4723,7 +4775,7 @@ export default function Home() {
         </DashboardBackContext.Provider>
         )}
 
-        {selectedEnvironment === 'docker' && canViewNotifications && activeToast ? (
+        {canViewNotifications && activeToast ? (
           <GlobalNotificationToast
             notification={activeToast}
             onClose={() => setActiveToast(null)}
@@ -4786,6 +4838,9 @@ function KubernetesPlaceholderPanel({ action }) {
   }
   if (action.id === 'k8s-service') {
     return <KubernetesServiceCommandPanel />;
+  }
+  if (action.id === 'k8s-auth') {
+    return <KubernetesAuthenticationPanel />;
   }
   if (action.id === 'k8s-configmap') {
     return <KubernetesLiteralCommandPanel key="configmap-literals" resourceType="configmap" />;
@@ -5335,6 +5390,579 @@ function KubernetesLiteralCommandPanel({ resourceType }) {
         </div>
       ) : null}
     </section>
+  );
+}
+
+const K8S_AUTH_VERBS = ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'];
+const K8S_AUTH_RESOURCES = [
+  { value: 'pods', label: 'Pods' },
+  { value: 'deployments', label: 'Deployments' },
+  { value: 'services', label: 'Services' },
+  { value: 'configmaps', label: 'ConfigMaps' },
+  { value: 'secrets', label: 'Secrets' },
+  { value: 'jobs', label: 'Jobs' },
+  { value: 'cronjobs', label: 'CronJobs' },
+  { value: 'persistentvolumeclaims', label: 'PVC' },
+  { value: 'ingresses', label: 'Ingress' },
+  { value: 'customresourcedefinitions', label: 'Custom Resources' },
+];
+const K8S_AUTH_EXPIRATIONS = [30, 90, 180, 365];
+const K8S_AUTH_DEFAULT_STEPS = [
+  { key: 'private_key', label: 'Generating private key...', status: 'pending' },
+  { key: 'csr', label: 'Generating CSR...', status: 'pending' },
+  { key: 'encode', label: 'Encoding CSR...', status: 'pending' },
+  { key: 'submit', label: 'Submitting CSR...', status: 'pending' },
+  { key: 'approve', label: 'Approving certificate...', status: 'pending' },
+  { key: 'wait', label: 'Waiting for signed certificate...', status: 'pending' },
+  { key: 'role', label: 'Creating Role...', status: 'pending' },
+  { key: 'rolebinding', label: 'Creating RoleBinding...', status: 'pending' },
+  { key: 'kubeconfig', label: 'Updating kubeconfig...', status: 'pending' },
+  { key: 'validate', label: 'Validating access...', status: 'pending' },
+  { key: 'completed', label: 'Completed', status: 'pending' },
+];
+
+const getKubernetesAuthDefaultForm = () => ({
+  username: '',
+  namespace: 'default',
+  roleName: 'developer-role',
+  permissions: [],
+  resources: [],
+  certificateName: '',
+  expirationDays: '90',
+});
+
+const formatKubernetesAuthDate = (value) => {
+  if (!value) return 'Unavailable';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toLocaleString();
+};
+
+const getKubernetesAuthResourceLabel = (value) => (
+  K8S_AUTH_RESOURCES.find((resource) => resource.value === value)?.label || value
+);
+
+const downloadTextFile = (filename, content) => {
+  const blob = new Blob([content || ''], { type: 'text/plain;charset=utf-8' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || 'kubernetes-auth-file';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+const copyPlainText = async (text) => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
+};
+
+function KubernetesAuthenticationPanel() {
+  const [activeTab, setActiveTab] = useState('create');
+  const [form, setForm] = useState(() => getKubernetesAuthDefaultForm());
+  const [namespaces, setNamespaces] = useState(() => Array.from(new Set([...readStoredKubernetesNamespaces(), 'kube-system'])));
+  const [users, setUsers] = useState([]);
+  const [auditLog, setAuditLog] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [message, setMessage] = useState('');
+  const [progressSteps, setProgressSteps] = useState(() => K8S_AUTH_DEFAULT_STEPS);
+  const [successUser, setSuccessUser] = useState(null);
+  const [detailsUser, setDetailsUser] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [search, setSearch] = useState('');
+  const [namespaceFilter, setNamespaceFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => setNamespaces(Array.from(new Set([...readStoredKubernetesNamespaces(), 'kube-system'])));
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+  }, []);
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  useEffect(() => {
+    if (!creating) return undefined;
+    let currentIndex = 0;
+    const timer = window.setInterval(() => {
+      setProgressSteps((current) => current.map((step, index) => {
+        if (index < currentIndex) return { ...step, status: 'complete' };
+        if (index === currentIndex) return { ...step, status: 'active' };
+        return { ...step, status: 'pending' };
+      }));
+      currentIndex = Math.min(currentIndex + 1, K8S_AUTH_DEFAULT_STEPS.length - 1);
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [creating]);
+
+  const loadUsers = async () => {
+    setLoading(true);
+    try {
+      const response = await authService.listKubernetesAuthUsers();
+      setUsers(response.data.users || []);
+      setAuditLog(response.data.audit_log || []);
+    } catch (error) {
+      setMessage(error.response?.data?.error || 'Unable to load Kubernetes authentication users.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateForm = (field, value) => {
+    setForm((current) => {
+      const next = { ...current, [field]: value };
+      if (field === 'username' && !current.certificateName.trim()) {
+        next.certificateName = value;
+      }
+      return next;
+    });
+  };
+
+  const toggleCollectionValue = (field, value) => {
+    setForm((current) => {
+      const values = new Set(current[field]);
+      if (values.has(value)) {
+        values.delete(value);
+      } else {
+        values.add(value);
+      }
+      return { ...current, [field]: Array.from(values) };
+    });
+  };
+
+  const resetForm = () => {
+    setForm(getKubernetesAuthDefaultForm());
+    setMessage('');
+  };
+
+  const createUser = async (event) => {
+    event.preventDefault();
+    setMessage('');
+    setProgressSteps(K8S_AUTH_DEFAULT_STEPS);
+
+    if (!form.username.trim()) {
+      setMessage('Username is required.');
+      return;
+    }
+    if (!form.permissions.length) {
+      setMessage('Select at least one permission.');
+      return;
+    }
+    if (!form.resources.length) {
+      setMessage('Select at least one resource.');
+      return;
+    }
+
+    setCreating(true);
+    try {
+      const response = await authService.createKubernetesAuthUser({
+        username: form.username,
+        namespace: form.namespace,
+        role_name: form.roleName || 'developer-role',
+        permissions: form.permissions,
+        resources: form.resources,
+        certificate_name: form.certificateName || form.username,
+        expiration_days: Number(form.expirationDays),
+      });
+      setProgressSteps(response.data.steps || K8S_AUTH_DEFAULT_STEPS.map((step) => ({ ...step, status: 'complete' })));
+      setSuccessUser(response.data.user || null);
+      setMessage('User created successfully.');
+      await loadUsers();
+      setActiveTab('manage');
+    } catch (error) {
+      const data = error.response?.data || {};
+      setProgressSteps(data.steps || K8S_AUTH_DEFAULT_STEPS.map((step) => (
+        step.status === 'active' ? { ...step, status: 'error' } : step
+      )));
+      setMessage(data.error || 'Unable to create Kubernetes user.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const downloadArtifact = async (authUser, artifact) => {
+    try {
+      const response = await authService.downloadKubernetesAuthArtifact(authUser.id, artifact);
+      downloadTextFile(response.data.filename, response.data.content);
+      setMessage(`${response.data.filename} downloaded.`);
+    } catch (error) {
+      setMessage(error.response?.data?.error || 'Unable to download file.');
+    }
+  };
+
+  const copyKubeconfig = async (authUser) => {
+    try {
+      const content = authUser.kubeconfig
+        || (await authService.downloadKubernetesAuthArtifact(authUser.id, 'kubeconfig')).data.content;
+      await copyPlainText(content);
+      setMessage('Kubeconfig copied.');
+    } catch (error) {
+      setMessage(error.response?.data?.error || 'Unable to copy kubeconfig.');
+    }
+  };
+
+  const viewDetails = async (authUser) => {
+    setMessage('');
+    try {
+      const response = await authService.getKubernetesAuthUser(authUser.id);
+      setDetailsUser(response.data.user);
+    } catch (error) {
+      setMessage(error.response?.data?.error || 'Unable to load user details.');
+    }
+  };
+
+  const deleteUser = async () => {
+    if (!deleteTarget) return;
+    setLoading(true);
+    try {
+      await authService.deleteKubernetesAuthUser(deleteTarget.id);
+      setMessage(`${deleteTarget.username} deleted.`);
+      setDeleteTarget(null);
+      await loadUsers();
+    } catch (error) {
+      setMessage(error.response?.data?.error || 'Unable to delete Kubernetes user.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredUsers = users.filter((user) => {
+    const haystack = [user.username, user.namespace, user.role_name, user.certificate_status].join(' ').toLowerCase();
+    const searchMatch = !search.trim() || haystack.includes(search.trim().toLowerCase());
+    const namespaceMatch = !namespaceFilter || user.namespace === namespaceFilter;
+    const roleMatch = !roleFilter || user.role_name === roleFilter;
+    return searchMatch && namespaceMatch && roleMatch;
+  });
+  const namespaceOptions = Array.from(new Set([...namespaces, ...users.map((user) => user.namespace)])).filter(Boolean);
+  const roleOptions = Array.from(new Set(users.map((user) => user.role_name).filter(Boolean)));
+
+  return (
+    <section className="home-panel k8s-auth-panel" aria-label="Kubernetes authentication">
+      <div className="k8s-auth-header">
+        <div>
+          <h2>Kubernetes Authentication</h2>
+          <p>Generate certificate-backed Kubernetes users, roles, bindings, kubeconfig files, and access checks from one managed workflow.</p>
+        </div>
+        <div className="k8s-auth-summary">
+          <div><span>Managed users</span><strong>{users.length}</strong></div>
+          <div><span>Active certs</span><strong>{users.filter((user) => user.certificate_status === 'active').length}</strong></div>
+        </div>
+      </div>
+
+      <div className="resource-tabs k8s-auth-tabs" role="tablist" aria-label="Kubernetes authentication tabs">
+        <button type="button" role="tab" className={activeTab === 'create' ? 'active' : ''} onClick={() => setActiveTab('create')}>Create User</button>
+        <button type="button" role="tab" className={activeTab === 'manage' ? 'active' : ''} onClick={() => setActiveTab('manage')}>Manage Users</button>
+      </div>
+
+      {message ? <p className="container-message">{message}</p> : null}
+
+      {activeTab === 'create' ? (
+        <form className="k8s-auth-create" onSubmit={createUser}>
+          <div className="k8s-auth-section">
+            <div className="k8s-auth-section-heading">
+              <strong>User Information</strong>
+              <span>Identity, namespace, and role scope</span>
+            </div>
+            <div className="k8s-auth-form-grid">
+              <label>
+                <span>Username</span>
+                <input value={form.username} onChange={(event) => updateForm('username', event.target.value)} disabled={creating} required placeholder="developer" />
+              </label>
+              <label>
+                <span>Namespace</span>
+                <select value={form.namespace} onChange={(event) => updateForm('namespace', event.target.value)} disabled={creating}>
+                  {namespaceOptions.map((namespaceName) => <option value={namespaceName} key={namespaceName}>{namespaceName}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Role Name</span>
+                <input value={form.roleName} onChange={(event) => updateForm('roleName', event.target.value)} disabled={creating} placeholder="developer-role" />
+              </label>
+            </div>
+          </div>
+
+          <div className="k8s-auth-section">
+            <div className="k8s-auth-section-heading">
+              <strong>Permissions</strong>
+              <span>Kubernetes verbs</span>
+            </div>
+            <div className="k8s-auth-checkbox-grid">
+              {K8S_AUTH_VERBS.map((verb) => (
+                <label className="k8s-auth-check" key={verb}>
+                  <input type="checkbox" checked={form.permissions.includes(verb)} onChange={() => toggleCollectionValue('permissions', verb)} disabled={creating} />
+                  <span>{verb.charAt(0).toUpperCase() + verb.slice(1)}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="k8s-auth-section">
+            <div className="k8s-auth-section-heading">
+              <strong>Resources</strong>
+              <span>Multi-select Kubernetes resources</span>
+            </div>
+            <details className="k8s-auth-multiselect">
+              <summary>{form.resources.length ? `${form.resources.length} resources selected` : 'Choose resources'}</summary>
+              <div>
+                {K8S_AUTH_RESOURCES.map((resource) => (
+                  <label className="k8s-auth-check" key={resource.value}>
+                    <input type="checkbox" checked={form.resources.includes(resource.value)} onChange={() => toggleCollectionValue('resources', resource.value)} disabled={creating} />
+                    <span>{resource.label}</span>
+                  </label>
+                ))}
+              </div>
+            </details>
+            <div className="k8s-auth-chip-list">
+              {form.resources.map((resource) => <span key={resource}>{getKubernetesAuthResourceLabel(resource)}</span>)}
+            </div>
+          </div>
+
+          <div className="k8s-auth-section">
+            <div className="k8s-auth-section-heading">
+              <strong>Certificate Options</strong>
+              <span>Certificate name and lifetime</span>
+            </div>
+            <div className="k8s-auth-form-grid">
+              <label>
+                <span>Certificate Name</span>
+                <input value={form.certificateName} onChange={(event) => updateForm('certificateName', event.target.value)} disabled={creating} placeholder={form.username || 'username'} />
+              </label>
+              <label>
+                <span>Expiration</span>
+                <select value={form.expirationDays} onChange={(event) => updateForm('expirationDays', event.target.value)} disabled={creating}>
+                  {K8S_AUTH_EXPIRATIONS.map((days) => <option value={days} key={days}>{days} Days</option>)}
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div className="k8s-command-actions">
+            <button type="submit" className="home-primary-button" disabled={creating || !form.username.trim()}>Generate User</button>
+            <button type="button" className="home-secondary-button" onClick={resetForm} disabled={creating}>Reset</button>
+          </div>
+        </form>
+      ) : (
+        <div className="k8s-auth-manage">
+          <div className="k8s-auth-toolbar">
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search users, namespaces, roles" />
+            <select value={namespaceFilter} onChange={(event) => setNamespaceFilter(event.target.value)}>
+              <option value="">All namespaces</option>
+              {namespaceOptions.map((namespaceName) => <option value={namespaceName} key={namespaceName}>{namespaceName}</option>)}
+            </select>
+            <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+              <option value="">All roles</option>
+              {roleOptions.map((roleName) => <option value={roleName} key={roleName}>{roleName}</option>)}
+            </select>
+            <button type="button" className="home-secondary-button" onClick={loadUsers} disabled={loading}>Refresh</button>
+          </div>
+
+          <div className="resource-table-wrap k8s-auth-table-wrap">
+            <table className="resource-table k8s-auth-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Namespace</th>
+                  <th>Role</th>
+                  <th>Certificate Status</th>
+                  <th>Certificate Expiry</th>
+                  <th>Permissions</th>
+                  <th>Can Access</th>
+                  <th>Created Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.length ? filteredUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td><strong>{user.username}</strong></td>
+                    <td>{user.namespace}</td>
+                    <td>{user.role_name}</td>
+                    <td><span className={`k8s-auth-status ${user.certificate_status}`}>{user.certificate_status}</span></td>
+                    <td>
+                      {formatKubernetesAuthDate(user.certificate_expiry)}
+                      {user.certificate_expiry_days_remaining !== null ? <small>{user.certificate_expiry_days_remaining} day(s) left</small> : null}
+                    </td>
+                    <td><div className="k8s-auth-mini-chips">{(user.permissions || []).map((verb) => <span key={verb}>{verb}</span>)}</div></td>
+                    <td>{user.can_access ? 'Yes' : 'Review'}</td>
+                    <td>{formatKubernetesAuthDate(user.created_date)}</td>
+                    <td>
+                      <details className="k8s-auth-actions-menu">
+                        <summary>Actions</summary>
+                        <div>
+                          <button type="button" onClick={() => viewDetails(user)}>View Details</button>
+                          <button type="button" onClick={() => downloadArtifact(user, 'kubeconfig')}>Download kubeconfig</button>
+                          <button type="button" onClick={() => downloadArtifact(user, 'certificate')}>Download Certificate</button>
+                          <button type="button" onClick={() => copyKubeconfig(user)}>Copy kubeconfig</button>
+                          <button type="button" disabled>Regenerate Certificate</button>
+                          <button type="button" disabled>Update Role</button>
+                          <button type="button" disabled>Update Permissions</button>
+                          <button type="button" className="danger" onClick={() => setDeleteTarget(user)}>Delete User</button>
+                        </div>
+                      </details>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan="9" className="resource-empty-state">{loading ? 'Loading users...' : 'No Kubernetes users found.'}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {auditLog.length ? (
+            <div className="k8s-auth-audit">
+              <div className="k8s-auth-section-heading">
+                <strong>Audit Log</strong>
+                <span>Recent create, download, and delete activity</span>
+              </div>
+              {auditLog.slice(0, 8).map((item, index) => (
+                <article key={`${item.created_at}-${index}`}>
+                  <strong>{item.action}</strong>
+                  <span>{item.username || item.message}</span>
+                  <time>{formatKubernetesAuthDate(item.created_at)}</time>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {creating ? <KubernetesAuthProgressDialog steps={progressSteps} /> : null}
+      {successUser ? (
+        <KubernetesAuthSuccessDialog
+          user={successUser}
+          onClose={() => setSuccessUser(null)}
+          onDownload={downloadArtifact}
+          onCopy={copyKubeconfig}
+        />
+      ) : null}
+      {detailsUser ? (
+        <KubernetesAuthDetailsDialog
+          user={detailsUser}
+          onClose={() => setDetailsUser(null)}
+          onDownload={downloadArtifact}
+          onCopy={copyKubeconfig}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <div className="output-modal-backdrop" role="presentation">
+          <div className="resource-delete-modal k8s-auth-delete-modal" role="dialog" aria-modal="true" aria-labelledby="k8s-auth-delete-title">
+            <h3 id="k8s-auth-delete-title">Delete Kubernetes user</h3>
+            <p>This removes the CSR, RoleBinding, Role, kubeconfig entry, and generated certificates tracked for this user.</p>
+            <dl>
+              <div><dt>Username</dt><dd>{deleteTarget.username}</dd></div>
+              <div><dt>Namespace</dt><dd>{deleteTarget.namespace}</dd></div>
+              <div><dt>Role</dt><dd>{deleteTarget.role_name}</dd></div>
+            </dl>
+            <div className="resource-modal-actions">
+              <button type="button" className="home-secondary-button" onClick={() => setDeleteTarget(null)} disabled={loading}>Cancel</button>
+              <button type="button" className="home-danger-button" onClick={deleteUser} disabled={loading}>Delete User</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KubernetesAuthProgressDialog({ steps }) {
+  return (
+    <div className="output-modal-backdrop" role="presentation">
+      <div className="k8s-auth-progress-modal" role="dialog" aria-modal="true" aria-labelledby="k8s-auth-progress-title">
+        <h3 id="k8s-auth-progress-title">Creating Kubernetes user</h3>
+        <div className="k8s-auth-progress-list">
+          {steps.map((step) => (
+            <div className={`k8s-auth-progress-step ${step.status}`} key={step.key}>
+              <span>{step.status === 'complete' ? 'Done' : step.status === 'error' ? 'Error' : step.status === 'active' ? 'Now' : 'Wait'}</span>
+              <strong>{step.label}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KubernetesAuthSuccessDialog({ user, onClose, onDownload, onCopy }) {
+  return (
+    <div className="output-modal-backdrop" role="presentation">
+      <div className="k8s-auth-success-modal" role="dialog" aria-modal="true" aria-labelledby="k8s-auth-success-title">
+        <div className="k8s-auth-success-heading">
+          <span>Success</span>
+          <div>
+            <h3 id="k8s-auth-success-title">User Created Successfully</h3>
+            <p>{user.username} is ready to authenticate with the generated kubeconfig.</p>
+          </div>
+        </div>
+        <dl className="k8s-auth-detail-grid">
+          <div><dt>Username</dt><dd>{user.username}</dd></div>
+          <div><dt>Namespace</dt><dd>{user.namespace}</dd></div>
+          <div><dt>Role</dt><dd>{user.role_name}</dd></div>
+          <div><dt>Certificate Expiry</dt><dd>{formatKubernetesAuthDate(user.certificate_expiry)}</dd></div>
+          <div><dt>Permissions</dt><dd>{(user.permissions || []).join(', ')}</dd></div>
+        </dl>
+        <div className="k8s-auth-downloads">
+          <button type="button" className="home-secondary-button" onClick={() => onDownload(user, 'certificate')}>Download Certificate</button>
+          <button type="button" className="home-secondary-button" onClick={() => onDownload(user, 'private-key')}>Download Private Key</button>
+          <button type="button" className="home-secondary-button" onClick={() => onDownload(user, 'kubeconfig')}>Download Kubeconfig</button>
+          <button type="button" className="home-primary-button" onClick={() => onCopy(user)}>Copy kubeconfig</button>
+        </div>
+        <div className="resource-modal-actions">
+          <button type="button" className="home-secondary-button" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KubernetesAuthDetailsDialog({ user, onClose, onDownload, onCopy }) {
+  return (
+    <div className="output-modal-backdrop" role="presentation">
+      <div className="k8s-auth-details-modal" role="dialog" aria-modal="true" aria-labelledby="k8s-auth-details-title">
+        <div className="output-modal-heading">
+          <h3 id="k8s-auth-details-title">Kubernetes User Details</h3>
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+        <dl className="k8s-auth-detail-grid">
+          <div><dt>Username</dt><dd>{user.username}</dd></div>
+          <div><dt>Namespace</dt><dd>{user.namespace}</dd></div>
+          <div><dt>Certificate Information</dt><dd>{user.certificate_status} until {formatKubernetesAuthDate(user.certificate_expiry)}</dd></div>
+          <div><dt>Role</dt><dd>{user.role_name}</dd></div>
+          <div><dt>RoleBinding</dt><dd>{user.role_binding || 'Unavailable'}</dd></div>
+          <div><dt>Allowed Resources</dt><dd>{(user.allowed_resources || []).map(getKubernetesAuthResourceLabel).join(', ')}</dd></div>
+          <div><dt>Allowed Verbs</dt><dd>{(user.allowed_verbs || []).join(', ')}</dd></div>
+          <div><dt>Current Context</dt><dd>{user.current_context || 'Unavailable'}</dd></div>
+          <div><dt>Authentication Status</dt><dd>{user.authentication_status || 'Unavailable'}</dd></div>
+        </dl>
+        <div className="k8s-auth-can-i">
+          <strong>Can-I Results</strong>
+          {(user.can_i_results || []).length ? user.can_i_results.map((result, index) => (
+            <span className={result.allowed ? 'allowed' : 'denied'} key={`${result.verb}-${result.resource}-${index}`}>
+              {result.verb} {result.resource}: {result.allowed ? 'yes' : 'no'}
+            </span>
+          )) : <span>No validation results recorded.</span>}
+        </div>
+        <div className="k8s-auth-downloads">
+          <button type="button" className="home-secondary-button" onClick={() => onDownload(user, 'kubeconfig')}>Download kubeconfig</button>
+          <button type="button" className="home-secondary-button" onClick={() => onDownload(user, 'certificate')}>Download Certificate</button>
+          <button type="button" className="home-primary-button" onClick={() => onCopy(user)}>Copy kubeconfig</button>
+        </div>
+      </div>
+    </div>
   );
 }
 

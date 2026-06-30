@@ -8048,6 +8048,31 @@ def login(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def forgot_password(request):
+    """Reset a user's password by username for testing environments."""
+    username = str(request.data.get('username', '')).strip()
+    new_password = request.data.get('new_password', '')
+    confirm_password = request.data.get('confirm_password', '')
+
+    if not username or not new_password or not confirm_password:
+        return Response({'error': 'Username, new password, and confirm password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if new_password != confirm_password:
+        return Response({'error': 'New password and confirm password do not match.'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(new_password) < 8:
+        return Response({'error': 'New password must be at least 8 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(username=username)
+    except User.DoesNotExist:
+        return Response({'error': 'Username not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    user.set_password(new_password)
+    user.save(update_fields=['password'])
+    return Response({'message': 'Password updated successfully. Please sign in with your new password.'})
+
+
 @api_view(['GET', 'PUT'])
 @permission_classes([IsAuthenticated])
 def user_detail(request):

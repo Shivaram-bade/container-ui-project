@@ -102,6 +102,10 @@ export const authService = {
     });
   },
 
+  forgotPassword: (passwordData) => {
+    return api.post('/api/auth/forgot-password/', passwordData);
+  },
+
   getRbac: () => {
     return api.get('/api/auth/rbac/');
   },

@@ -1065,7 +1065,7 @@
 
 .login-card .tab-buttons {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 22px;
   padding: 5px;
@@ -1220,6 +1220,12 @@
   font-size: 13px;
   font-weight: 650;
   text-align: center;
+}
+
+.footer-divider {
+  display: inline-block;
+  margin: 0 8px;
+  color: rgba(148, 163, 184, 0.62);
 }
 
 .toggle-link {
@@ -1484,6 +1490,11 @@
 
   .login-brand {
     align-items: flex-start;
+  }
+
+  .login-card .tab-btn {
+    padding-inline: 8px;
+    font-size: 12px;
   }
 
   .logo-icon {

@@ -309,15 +309,20 @@ function PasswordVisibilityIcon({ visible }) {
 export default function Login() {
   const navigate = useNavigate();
   const [showLoginCard, setShowLoginCard] = useState(false);
-  const [isLogin, setIsLogin] = useState(true);
+  const [authMode, setAuthMode] = useState('login');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordVisible, setPasswordVisible] = useState(false);
+  const [confirmPasswordVisible, setConfirmPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  const isLogin = authMode === 'login';
+  const isRegister = authMode === 'register';
+  const isForgotPassword = authMode === 'forgot';
 
   useEffect(() => {
     const revealTimer = window.setTimeout(() => {
@@ -352,11 +357,14 @@ export default function Login() {
     return fieldErrors || 'An error occurred. Please try again.';
   };
 
-  const switchMode = (nextIsLogin) => {
-    setIsLogin(nextIsLogin);
+  const switchMode = (nextMode) => {
+    setAuthMode(nextMode);
     setPasswordVisible(false);
+    setConfirmPasswordVisible(false);
     setError('');
     setSuccess('');
+    setPassword('');
+    setConfirmPassword('');
   };
 
   const handleSubmit = async (e) => {
@@ -384,7 +392,7 @@ export default function Login() {
           sessionStorage.removeItem('vitel-selected-environment');
           navigate('/home', { replace: true });
         }, 800);
-      } else {
+      } else if (isRegister) {
         if (!username || !email || !password || !confirmPassword) {
           setError('Please complete all registration fields');
           setLoading(false);
@@ -403,7 +411,38 @@ export default function Login() {
         setPassword('');
         setConfirmPassword('');
         setTimeout(() => {
-          setIsLogin(true);
+          setAuthMode('login');
+          setSuccess('');
+        }, 1500);
+      } else {
+        if (!username || !password || !confirmPassword) {
+          setError('Please enter your username, new password, and confirm password');
+          setLoading(false);
+          return;
+        }
+
+        if (password !== confirmPassword) {
+          setError('New password and confirm password do not match');
+          setLoading(false);
+          return;
+        }
+
+        if (password.length < 8) {
+          setError('New password must be at least 8 characters');
+          setLoading(false);
+          return;
+        }
+
+        const response = await authService.forgotPassword({
+          username,
+          new_password: password,
+          confirm_password: confirmPassword,
+        });
+        setSuccess(response.data.message || 'Password updated successfully. Please sign in.');
+        setPassword('');
+        setConfirmPassword('');
+        setTimeout(() => {
+          setAuthMode('login');
           setSuccess('');
         }, 1500);
       }
@@ -435,18 +474,27 @@ export default function Login() {
           </span>
           <div>
             <p>Container UI App</p>
-            <h1 className="login-title">Welcome back</h1>
-            <span className="login-subtitle">Sign in with your username and password to manage containers, deployments, and agents.</span>
+            <h1 className="login-title">{isForgotPassword ? 'Reset password' : isLogin ? 'Welcome back' : 'Create account'}</h1>
+            <span className="login-subtitle">
+              {isForgotPassword
+                ? 'Enter your username and choose a new password to return to the login page.'
+                : isLogin
+                  ? 'Sign in with your username and password to manage containers, deployments, and agents.'
+                  : 'Create an account to access the container and Kubernetes command center.'}
+            </span>
           </div>
         </div>
 
         <form onSubmit={handleSubmit}>
           <div className="tab-buttons" role="tablist" aria-label="Authentication mode">
-            <button type="button" className={`tab-btn ${isLogin ? 'active' : ''}`} onClick={() => switchMode(true)} aria-selected={isLogin} role="tab">
+            <button type="button" className={`tab-btn ${isLogin ? 'active' : ''}`} onClick={() => switchMode('login')} aria-selected={isLogin} role="tab">
               Sign in
             </button>
-            <button type="button" className={`tab-btn ${!isLogin ? 'active' : ''}`} onClick={() => switchMode(false)} aria-selected={!isLogin} role="tab">
+            <button type="button" className={`tab-btn ${isRegister ? 'active' : ''}`} onClick={() => switchMode('register')} aria-selected={isRegister} role="tab">
               Create account
+            </button>
+            <button type="button" className={`tab-btn ${isForgotPassword ? 'active' : ''}`} onClick={() => switchMode('forgot')} aria-selected={isForgotPassword} role="tab">
+              Forgot password
             </button>
           </div>
 
@@ -458,7 +506,7 @@ export default function Login() {
             <input type="text" id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Enter your username" disabled={loading} autoComplete="username" />
           </div>
 
-          {!isLogin && (
+          {isRegister && (
             <div className="form-group">
               <label htmlFor="email">Email</label>
               <input type="email" id="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" disabled={loading} autoComplete="email" />
@@ -466,9 +514,9 @@ export default function Login() {
           )}
 
           <div className="form-group">
-            <label htmlFor="password">Password</label>
+            <label htmlFor="password">{isForgotPassword ? 'New Password' : 'Password'}</label>
             <div className="login-password-field">
-              <input type={passwordVisible ? 'text' : 'password'} id="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" disabled={loading} autoComplete={isLogin ? 'current-password' : 'new-password'} />
+              <input type={passwordVisible ? 'text' : 'password'} id="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isForgotPassword ? 'Enter new password' : 'Enter your password'} disabled={loading} autoComplete={isLogin ? 'current-password' : 'new-password'} />
               <button
                 type="button"
                 className="login-password-eye"
@@ -485,7 +533,19 @@ export default function Login() {
           {!isLogin && (
             <div className="form-group">
               <label htmlFor="confirmPassword">Confirm Password</label>
-              <input type="password" id="confirmPassword" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Confirm your password" disabled={loading} autoComplete="new-password" />
+              <div className="login-password-field">
+                <input type={confirmPasswordVisible ? 'text' : 'password'} id="confirmPassword" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder={isForgotPassword ? 'Confirm new password' : 'Confirm your password'} disabled={loading} autoComplete="new-password" />
+                <button
+                  type="button"
+                  className="login-password-eye"
+                  onClick={() => setConfirmPasswordVisible((visible) => !visible)}
+                  disabled={loading}
+                  aria-label={confirmPasswordVisible ? 'Hide confirm password' : 'Show confirm password'}
+                  title={confirmPasswordVisible ? 'Hide confirm password' : 'Show confirm password'}
+                >
+                  <PasswordVisibilityIcon visible={confirmPasswordVisible} />
+                </button>
+              </div>
             </div>
           )}
 
@@ -493,20 +553,26 @@ export default function Login() {
             {loading ? (
               <>
                 <span className="spinner" />
-                {isLogin ? 'Signing in...' : 'Creating account...'}
+                {isLogin ? 'Signing in...' : isRegister ? 'Creating account...' : 'Updating password...'}
               </>
-            ) : isLogin ? 'Sign in' : 'Create account'}
+            ) : isLogin ? 'Sign in' : isRegister ? 'Create account' : 'Update password'}
           </button>
         </form>
 
         <p className="footer-text">
           {isLogin ? (
             <>
-              Need an account? <button type="button" className="toggle-link" onClick={() => switchMode(false)}>Create account</button>
+              Need an account? <button type="button" className="toggle-link" onClick={() => switchMode('register')}>Create account</button>
+              <span className="footer-divider">|</span>
+              <button type="button" className="toggle-link" onClick={() => switchMode('forgot')}>Forgot password?</button>
+            </>
+          ) : isRegister ? (
+            <>
+              Already have an account? <button type="button" className="toggle-link" onClick={() => switchMode('login')}>Sign in</button>
             </>
           ) : (
             <>
-              Already have an account? <button type="button" className="toggle-link" onClick={() => switchMode(true)}>Sign in</button>
+              Remember your password? <button type="button" className="toggle-link" onClick={() => switchMode('login')}>Sign in</button>
             </>
           )}
         </p>

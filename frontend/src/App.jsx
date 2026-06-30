@@ -3,6 +3,18 @@ import Login from './pages/Login';
 import Home from './pages/Home';
 import './App.css';
 
+function hasAccessToken() {
+  return Boolean(localStorage.getItem('access_token'));
+}
+
+function LoginRoute() {
+  return hasAccessToken() ? <Navigate to="/home" replace /> : <Login />;
+}
+
+function ProtectedRoute() {
+  return hasAccessToken() ? <Home /> : <Navigate to="/" replace />;
+}
+
 function App() {
   const appRoutes = [
     '/home',
@@ -41,9 +53,9 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Login />} />
+        <Route path="/" element={<LoginRoute />} />
         {appRoutes.map((path) => (
-          <Route key={path} path={path} element={<Home />} />
+          <Route key={path} path={path} element={<ProtectedRoute />} />
         ))}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

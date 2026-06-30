@@ -162,6 +162,8 @@ const AGENT_INSTALL_WITH_DAEMON_JSON = 'with_daemon_json';
 const AGENT_INSTALL_WITHOUT_DAEMON_JSON = 'without_daemon_json';
 const LOCAL_SERVER_ID = 'local';
 const NOTIFICATION_LIMIT = 150;
+const IDLE_LOGOUT_MS = 5 * 60 * 1000;
+const IDLE_LOGOUT_CHECK_MS = 10 * 1000;
 const KUBERNETES_NAMESPACE_STORAGE_KEY = 'vitel-k8s-namespaces';
 const KUBERNETES_NAMESPACE_EVENT = 'vitel-k8s-namespaces-updated';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
@@ -192,16 +194,27 @@ const saveKubernetesNamespace = (namespaceName) => {
   }
 };
 
-const getNotificationStorageKey = (user) => `vitel-notifications:${user?.id || user?.username || 'default'}`;
+const NOTIFICATION_ENVIRONMENTS = ['docker', 'kubernetes'];
 
-const readStoredNotifications = (user) => {
+const getNotificationStorageKey = (user, environment = 'docker') => `vitel-notifications:${user?.id || user?.username || 'default'}:${environment}`;
+
+const readStoredNotifications = (user, environment = 'docker') => {
   try {
-    const value = JSON.parse(localStorage.getItem(getNotificationStorageKey(user)) || '[]');
+    const storedValue = localStorage.getItem(getNotificationStorageKey(user, environment));
+    const legacyValue = environment === 'docker' ? localStorage.getItem(`vitel-notifications:${user?.id || user?.username || 'default'}`) : '';
+    const value = JSON.parse(storedValue || legacyValue || '[]');
     return Array.isArray(value) ? value.slice(0, NOTIFICATION_LIMIT) : [];
   } catch (error) {
     return [];
   }
 };
+
+const readStoredNotificationsByEnvironment = (user) => (
+  NOTIFICATION_ENVIRONMENTS.reduce((result, environment) => ({
+    ...result,
+    [environment]: readStoredNotifications(user, environment),
+  }), {})
+);
 
 const getNotificationType = (message) => (
   /unable|failed|failure|error|cannot|can't|missing|not found|does not match|must be|stopped unexpectedly/i.test(message)
@@ -674,12 +687,16 @@ export default function Home() {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState('');
   const [currentUser, setCurrentUser] = useState(() => getStoredUser());
-  const [notifications, setNotifications] = useState(() => readStoredNotifications(getStoredUser()));
+  const [notificationsByEnvironment, setNotificationsByEnvironment] = useState(() => readStoredNotificationsByEnvironment(getStoredUser()));
   const [bellOpen, setBellOpen] = useState(false);
   const [activeToast, setActiveToast] = useState(null);
+  const [kubernetesAuthBusy, setKubernetesAuthBusy] = useState(false);
   const notificationSignalRef = useRef({});
   const notificationHydratingRef = useRef(false);
   const bellTimerRef = useRef(null);
+  const lastActivityRef = useRef(Date.now());
+  const operationActiveRef = useRef(false);
+  const wasOperationActiveRef = useRef(false);
   const user = currentUser;
   const userOperations = new Set(user?.operations || []);
   const hasPermissionData = Array.isArray(user?.operations);
@@ -720,6 +737,7 @@ export default function Home() {
   const canDeleteRbacGroup = canOperate('delete_rbac_group');
   const canViewNotifications = canOperate('view_notifications');
   const canDeleteNotifications = canOperate('delete_notifications');
+  const notifications = notificationsByEnvironment[selectedEnvironment] || [];
   const isDashboardActive = activeAction.id === 'dashboard';
   const isUserProfileActive = activeAction.id === 'user-profile';
   const isServerInfoActive = activeAction.id === 'server-info';
@@ -737,6 +755,50 @@ export default function Home() {
   const isVolumeActive = activeAction.id === 'volume';
   const isRbacActive = activeAction.id === 'rbac';
   const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
+  const isOperationActive = Boolean([
+    serverInfoLoading,
+    containerLoading,
+    containersLoading,
+    containerDetailLoading,
+    containerActionLoading,
+    recycledContainersLoading,
+    restoreContainerLoading,
+    deleteRecycledContainerLoading,
+    connectLoading,
+    shellInputLoading,
+    volumeShellInputLoading,
+    volumeGuiLoading,
+    volumeFilePreviewLoading,
+    buildLoading,
+    imagesLoading,
+    imageDeleteLoading,
+    fileBrowserLoading,
+    deploymentLoading,
+    composeBrowserLoading,
+    deploymentsLoading,
+    deploymentDetailLoading,
+    deploymentActionLoading,
+    registryImagesLoading,
+    registryDeployLoading,
+    registryManagerLoading,
+    networkLoading,
+    networksLoading,
+    networkDeleteLoading,
+    volumeLoading,
+    volumesLoading,
+    volumeDeleteLoading,
+    agentDeleteLoading,
+    agentRemoveLoading,
+    agentRedeployLoading,
+    agentLoading,
+    agentsLoading,
+    monitoringLoading,
+    monitoringDetailLoading,
+    monitoringActionLoading,
+    rbacLoading,
+    passwordLoading,
+    kubernetesAuthBusy,
+  ].some(Boolean));
 
   useEffect(() => {
     setActiveAction(getActionForPath(location.pathname));
@@ -778,7 +840,7 @@ export default function Home() {
 
   useEffect(() => {
     notificationHydratingRef.current = true;
-    setNotifications(readStoredNotifications(currentUser));
+    setNotificationsByEnvironment(readStoredNotificationsByEnvironment(currentUser));
     notificationSignalRef.current = {};
   }, [currentUser?.id, currentUser?.username]);
 
@@ -787,11 +849,13 @@ export default function Home() {
       notificationHydratingRef.current = false;
       return;
     }
-    localStorage.setItem(
-      getNotificationStorageKey(currentUser),
-      JSON.stringify(notifications.slice(0, NOTIFICATION_LIMIT))
-    );
-  }, [notifications, currentUser?.id, currentUser?.username]);
+    NOTIFICATION_ENVIRONMENTS.forEach((environment) => {
+      localStorage.setItem(
+        getNotificationStorageKey(currentUser, environment),
+        JSON.stringify((notificationsByEnvironment[environment] || []).slice(0, NOTIFICATION_LIMIT))
+      );
+    });
+  }, [notificationsByEnvironment, currentUser?.id, currentUser?.username]);
 
   useEffect(() => {
     if (!activeToast) return undefined;
@@ -810,9 +874,18 @@ export default function Home() {
     return agent?.name || `agent-${normalizedServerId}`;
   };
 
-  const addNotification = (message, category = 'Application', serverId = '') => {
+  const updateNotificationsForEnvironment = (environment, updater) => {
+    const targetEnvironment = NOTIFICATION_ENVIRONMENTS.includes(environment) ? environment : 'docker';
+    setNotificationsByEnvironment((current) => ({
+      ...current,
+      [targetEnvironment]: updater(current[targetEnvironment] || []).slice(0, NOTIFICATION_LIMIT),
+    }));
+  };
+
+  const addNotification = (message, category = 'Application', serverId = '', environment = 'docker') => {
     const normalizedMessage = String(message || '').trim();
     if (!normalizedMessage) return;
+    const targetEnvironment = NOTIFICATION_ENVIRONMENTS.includes(environment) ? environment : 'docker';
     const serverLabel = serverId ? getNotificationServerLabel(serverId) : '';
     const serverTarget = serverLabel
       ? (serverLabel.toLowerCase().endsWith('server') ? serverLabel : `${serverLabel} server`)
@@ -827,11 +900,12 @@ export default function Home() {
       category,
       type: getNotificationType(contextualMessage),
       server: serverLabel,
+      environment: targetEnvironment,
       createdAt: new Date().toISOString(),
       read: false,
     };
-    setNotifications((current) => [notification, ...current].slice(0, NOTIFICATION_LIMIT));
-    if (canViewNotifications) setActiveToast(notification);
+    updateNotificationsForEnvironment(targetEnvironment, (current) => [notification, ...current]);
+    if (canViewNotifications && targetEnvironment === selectedEnvironment) setActiveToast(notification);
   };
 
   useEffect(() => {
@@ -865,15 +939,17 @@ export default function Home() {
       ['volume-delete', 'Volumes', volumeDeleteMessage, volumeServerId || LOCAL_SERVER_ID],
     ];
 
-    signals.forEach(([key, category, message, serverId]) => {
+    signals.forEach(([key, category, message, serverId, environment = 'docker']) => {
+      const signalBucket = notificationSignalRef.current[environment] || {};
+      notificationSignalRef.current[environment] = signalBucket;
       const normalizedMessage = String(message || '').trim();
       if (!normalizedMessage) {
-        notificationSignalRef.current[key] = '';
+        signalBucket[key] = '';
         return;
       }
-      if (notificationSignalRef.current[key] === normalizedMessage) return;
-      notificationSignalRef.current[key] = normalizedMessage;
-      addNotification(normalizedMessage, category, serverId);
+      if (signalBucket[key] === normalizedMessage) return;
+      signalBucket[key] = normalizedMessage;
+      addNotification(normalizedMessage, category, serverId, environment);
     });
   }, [
     passwordMessage,
@@ -911,7 +987,7 @@ export default function Home() {
   ]);
 
   const markAllNotificationsRead = () => {
-    setNotifications((current) => current.map((notification) => (
+    updateNotificationsForEnvironment(selectedEnvironment, (current) => current.map((notification) => (
       notification.read ? notification : { ...notification, read: true }
     )));
   };
@@ -938,12 +1014,12 @@ export default function Home() {
 
   const handleRemoveNotification = (notificationId) => {
     if (!canDeleteNotifications) return;
-    setNotifications((current) => current.filter((notification) => notification.id !== notificationId));
+    updateNotificationsForEnvironment(selectedEnvironment, (current) => current.filter((notification) => notification.id !== notificationId));
   };
 
   const handleClearNotifications = () => {
     if (!canDeleteNotifications) return;
-    setNotifications([]);
+    updateNotificationsForEnvironment(selectedEnvironment, () => []);
     setActiveToast(null);
   };
 
@@ -1670,6 +1746,42 @@ export default function Home() {
     window.location.href = '/';
   };
 
+  useEffect(() => {
+    operationActiveRef.current = isOperationActive;
+    if (wasOperationActiveRef.current && !isOperationActive) {
+      lastActivityRef.current = Date.now();
+    }
+    wasOperationActiveRef.current = isOperationActive;
+  }, [isOperationActive]);
+
+  useEffect(() => {
+    const recordActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'pointerdown'];
+
+    recordActivity();
+    activityEvents.forEach((eventName) => {
+      window.addEventListener(eventName, recordActivity, { passive: true });
+    });
+
+    const idleTimer = window.setInterval(() => {
+      const accessToken = localStorage.getItem('access_token');
+      if (!accessToken) return;
+      const idleForMs = Date.now() - lastActivityRef.current;
+      if (idleForMs >= IDLE_LOGOUT_MS && !operationActiveRef.current) {
+        handleLogout();
+      }
+    }, IDLE_LOGOUT_CHECK_MS);
+
+    return () => {
+      window.clearInterval(idleTimer);
+      activityEvents.forEach((eventName) => {
+        window.removeEventListener(eventName, recordActivity);
+      });
+    };
+  }, []);
+
   const handleSelectDockerEnvironment = () => {
     sessionStorage.setItem(SELECTED_ENVIRONMENT_STORAGE_KEY, 'docker');
     sessionStorage.removeItem(ENVIRONMENT_SELECTOR_STORAGE_KEY);
@@ -1691,6 +1803,7 @@ export default function Home() {
 
   const handleSwitchEnvironment = () => {
     setBellOpen(false);
+    setActiveToast(null);
     if (selectedEnvironment === 'kubernetes') {
       handleSelectDockerEnvironment();
       return;
@@ -4118,7 +4231,11 @@ export default function Home() {
             />
           </DashboardBackContext.Provider>
         ) : selectedEnvironment === 'kubernetes' ? (
-          <KubernetesPlaceholderPanel action={activeAction} />
+          <KubernetesPlaceholderPanel
+            action={activeAction}
+            onNotify={(message, category = 'Kubernetes') => addNotification(message, category, '', 'kubernetes')}
+            onAuthBusyChange={setKubernetesAuthBusy}
+          />
         ) : (
         <DashboardBackContext.Provider value={isDashboardActive || isNotificationsActive ? null : handleBackToDashboard}>
           {isDashboardActive ? (
@@ -4829,24 +4946,24 @@ function EnvironmentSelectionModal({ onSelectDocker, onSelectKubernetes }) {
   );
 }
 
-function KubernetesPlaceholderPanel({ action }) {
+function KubernetesPlaceholderPanel({ action, onNotify, onAuthBusyChange }) {
   if (action.id === 'k8s-pod') {
-    return <KubernetesPodCommandPanel />;
+    return <KubernetesPodCommandPanel onNotify={onNotify} />;
   }
   if (action.id === 'k8s-namespace') {
-    return <KubernetesNamespaceCommandPanel />;
+    return <KubernetesNamespaceCommandPanel onNotify={onNotify} />;
   }
   if (action.id === 'k8s-service') {
-    return <KubernetesServiceCommandPanel />;
+    return <KubernetesServiceCommandPanel onNotify={onNotify} />;
   }
   if (action.id === 'k8s-auth') {
-    return <KubernetesAuthenticationPanel />;
+    return <KubernetesAuthenticationPanel onNotify={onNotify} onBusyChange={onAuthBusyChange} />;
   }
   if (action.id === 'k8s-configmap') {
-    return <KubernetesLiteralCommandPanel key="configmap-literals" resourceType="configmap" />;
+    return <KubernetesLiteralCommandPanel key="configmap-literals" resourceType="configmap" onNotify={onNotify} />;
   }
   if (action.id === 'k8s-secrets') {
-    return <KubernetesLiteralCommandPanel key="secret-literals" resourceType="secret" />;
+    return <KubernetesLiteralCommandPanel key="secret-literals" resourceType="secret" onNotify={onNotify} />;
   }
 
   return (
@@ -4854,7 +4971,7 @@ function KubernetesPlaceholderPanel({ action }) {
   );
 }
 
-function KubernetesPodCommandPanel() {
+function KubernetesPodCommandPanel({ onNotify }) {
   const [resourceName, setResourceName] = useState('');
   const [imageName, setImageName] = useState('');
   const [registryMode, setRegistryMode] = useState('docker-hub');
@@ -4913,6 +5030,7 @@ function KubernetesPodCommandPanel() {
       'Status: command preview generated. Kubernetes execution is not connected yet.',
     ].join('\n'));
     setOutputVisible(true);
+    onNotify?.(`${selectedOperation} command preview generated for ${normalizedName}.`, 'Kubernetes Pods');
   };
 
   return (
@@ -5023,7 +5141,7 @@ function KubernetesPodCommandPanel() {
   );
 }
 
-function KubernetesNamespaceCommandPanel() {
+function KubernetesNamespaceCommandPanel({ onNotify }) {
   const [namespaceName, setNamespaceName] = useState('');
   const [operationType, setOperationType] = useState('create');
   const [outputVisible, setOutputVisible] = useState(false);
@@ -5043,6 +5161,7 @@ function KubernetesNamespaceCommandPanel() {
       'Status: command preview generated. Kubernetes execution is not connected yet.',
     ].join('\n'));
     setOutputVisible(true);
+    onNotify?.(`Namespace ${normalizedNamespace} command preview generated.`, 'Kubernetes Namespaces');
   };
 
   return (
@@ -5099,7 +5218,7 @@ function KubernetesNamespaceCommandPanel() {
   );
 }
 
-function KubernetesServiceCommandPanel() {
+function KubernetesServiceCommandPanel({ onNotify }) {
   const [serviceName, setServiceName] = useState('');
   const [operationType, setOperationType] = useState('pod');
   const [serviceType, setServiceType] = useState('ClusterIP');
@@ -5135,6 +5254,7 @@ function KubernetesServiceCommandPanel() {
       'Status: command preview generated. Kubernetes execution is not connected yet.',
     ].join('\n'));
     setOutputVisible(true);
+    onNotify?.(`Service command preview generated for ${normalizedServiceName}.`, 'Kubernetes Services');
   };
 
   return (
@@ -5226,7 +5346,7 @@ function KubernetesServiceCommandPanel() {
   );
 }
 
-function KubernetesLiteralCommandPanel({ resourceType }) {
+function KubernetesLiteralCommandPanel({ resourceType, onNotify }) {
   const isSecret = resourceType === 'secret';
   const title = isSecret ? 'Secrets Command Builder' : 'ConfigMap Command Builder';
   const nameLabel = isSecret ? 'Secret name' : 'ConfigMap name';
@@ -5285,6 +5405,7 @@ function KubernetesLiteralCommandPanel({ resourceType }) {
       'Status: command preview generated. Kubernetes execution is not connected yet.',
     ].join('\n'));
     setOutputVisible(true);
+    onNotify?.(`${isSecret ? 'Secret' : 'ConfigMap'} command preview generated for ${normalizedResourceName}.`, isSecret ? 'Kubernetes Secrets' : 'Kubernetes ConfigMaps');
   };
 
   return (
@@ -5469,7 +5590,7 @@ const copyPlainText = async (text) => {
   textarea.remove();
 };
 
-function KubernetesAuthenticationPanel() {
+function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
   const [activeTab, setActiveTab] = useState('create');
   const [form, setForm] = useState(() => getKubernetesAuthDefaultForm());
   const [namespaces, setNamespaces] = useState(() => Array.from(new Set([...readStoredKubernetesNamespaces(), 'kube-system'])));
@@ -5477,6 +5598,7 @@ function KubernetesAuthenticationPanel() {
   const [auditLog, setAuditLog] = useState([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [artifactBusy, setArtifactBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [progressSteps, setProgressSteps] = useState(() => K8S_AUTH_DEFAULT_STEPS);
   const [successUser, setSuccessUser] = useState(null);
@@ -5495,6 +5617,11 @@ function KubernetesAuthenticationPanel() {
   useEffect(() => {
     loadUsers();
   }, []);
+
+  useEffect(() => {
+    onBusyChange?.(creating || loading || artifactBusy);
+    return () => onBusyChange?.(false);
+  }, [creating, loading, artifactBusy, onBusyChange]);
 
   useEffect(() => {
     if (!creating) return undefined;
@@ -5582,6 +5709,7 @@ function KubernetesAuthenticationPanel() {
       setProgressSteps(response.data.steps || K8S_AUTH_DEFAULT_STEPS.map((step) => ({ ...step, status: 'complete' })));
       setSuccessUser(response.data.user || null);
       setMessage('User created successfully.');
+      onNotify?.(`Kubernetes user ${response.data.user?.username || form.username} created successfully.`, 'Kubernetes Authentication');
       await loadUsers();
       setActiveTab('manage');
     } catch (error) {
@@ -5590,39 +5718,53 @@ function KubernetesAuthenticationPanel() {
         step.status === 'active' ? { ...step, status: 'error' } : step
       )));
       setMessage(data.error || 'Unable to create Kubernetes user.');
+      onNotify?.(data.error || 'Unable to create Kubernetes user.', 'Kubernetes Authentication');
     } finally {
       setCreating(false);
     }
   };
 
   const downloadArtifact = async (authUser, artifact) => {
+    setArtifactBusy(true);
     try {
       const response = await authService.downloadKubernetesAuthArtifact(authUser.id, artifact);
       downloadTextFile(response.data.filename, response.data.content);
       setMessage(`${response.data.filename} downloaded.`);
+      onNotify?.(`${response.data.filename} downloaded.`, 'Kubernetes Authentication');
     } catch (error) {
       setMessage(error.response?.data?.error || 'Unable to download file.');
+      onNotify?.(error.response?.data?.error || 'Unable to download Kubernetes authentication file.', 'Kubernetes Authentication');
+    } finally {
+      setArtifactBusy(false);
     }
   };
 
   const copyKubeconfig = async (authUser) => {
+    setArtifactBusy(true);
     try {
       const content = authUser.kubeconfig
         || (await authService.downloadKubernetesAuthArtifact(authUser.id, 'kubeconfig')).data.content;
       await copyPlainText(content);
       setMessage('Kubeconfig copied.');
+      onNotify?.(`Kubeconfig copied for ${authUser.username}.`, 'Kubernetes Authentication');
     } catch (error) {
       setMessage(error.response?.data?.error || 'Unable to copy kubeconfig.');
+      onNotify?.(error.response?.data?.error || 'Unable to copy kubeconfig.', 'Kubernetes Authentication');
+    } finally {
+      setArtifactBusy(false);
     }
   };
 
   const viewDetails = async (authUser) => {
     setMessage('');
+    setArtifactBusy(true);
     try {
       const response = await authService.getKubernetesAuthUser(authUser.id);
       setDetailsUser(response.data.user);
     } catch (error) {
       setMessage(error.response?.data?.error || 'Unable to load user details.');
+    } finally {
+      setArtifactBusy(false);
     }
   };
 
@@ -5632,10 +5774,12 @@ function KubernetesAuthenticationPanel() {
     try {
       await authService.deleteKubernetesAuthUser(deleteTarget.id);
       setMessage(`${deleteTarget.username} deleted.`);
+      onNotify?.(`Kubernetes user ${deleteTarget.username} deleted.`, 'Kubernetes Authentication');
       setDeleteTarget(null);
       await loadUsers();
     } catch (error) {
       setMessage(error.response?.data?.error || 'Unable to delete Kubernetes user.');
+      onNotify?.(error.response?.data?.error || 'Unable to delete Kubernetes user.', 'Kubernetes Authentication');
     } finally {
       setLoading(false);
     }

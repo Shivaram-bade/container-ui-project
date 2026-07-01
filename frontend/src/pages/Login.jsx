@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
 import '../styles/Login.css';
@@ -39,8 +39,18 @@ const shipManifests = [
 ];
 
 const LOGIN_REVEAL_DELAY_MS = 3000;
+const DRONE_MOVE_MS = 2600;
+const DRONE_STAGGER_MS = 450;
+const DRONE_TARGET_HOLD_MS = 950;
+const DRONE_QUEUE_WAIT_MS = 900;
+const DRONE_RETURN_SETTLE_MS = 500;
+const DRONE_RECALL_ITEMS = [
+  { key: 'readiness', selector: '.drone-a', className: 'drone-a', label: 'Readiness', offset: -86 },
+  { key: 'liveness', selector: '.drone-b', className: 'drone-b', label: 'Liveness', offset: 0 },
+  { key: 'startup', selector: '.drone-c', className: 'drone-c', label: 'Startup', offset: 86 },
+];
 
-function InfrastructureScene() {
+function InfrastructureScene({ droneSequence }) {
   return (
     <div className="infra-scene" aria-hidden="true">
       <div className="sky-layer" />
@@ -57,12 +67,13 @@ function InfrastructureScene() {
       </div>
       <div className="parallax-depth depth-front">
         <CargoShips />
-        <RecoveryDrones />
+        <RecoveryDrones sequence={droneSequence} />
       </div>
       <Ocean />
       <RainLayer />
       <Fog />
       <SparkField />
+      <DroneRecallOverlay sequence={droneSequence} />
       <div className="scene-focus" />
       <div className="scene-vignette" />
     </div>
@@ -239,9 +250,11 @@ function CargoShip({ className, labels }) {
   );
 }
 
-function RecoveryDrones() {
+function RecoveryDrones({ sequence }) {
+  const recallClass = sequence?.active ? ' drone-recall-muted' : '';
+
   return (
-    <div className="recovery-drones">
+    <div className={`recovery-drones${recallClass}`}>
       <div className="repair-drone drone-a"><strong>Readiness</strong><span /></div>
       <div className="repair-drone drone-b"><strong>Liveness</strong><span /></div>
       <div className="repair-drone drone-c"><strong>Startup</strong><span /></div>
@@ -249,6 +262,34 @@ function RecoveryDrones() {
         <span>AI recovery</span>
         <strong>self-healing active</strong>
       </div>
+    </div>
+  );
+}
+
+function DroneRecallOverlay({ sequence }) {
+  if (!sequence?.active || !sequence?.positions) {
+    return null;
+  }
+
+  return (
+    <div className="drone-recall-overlay" key={sequence.id} aria-hidden="true">
+      {DRONE_RECALL_ITEMS.map((drone) => {
+        const position = sequence.positions[drone.key] || sequence.starts?.[drone.key] || { x: 0, y: 0, scale: 1 };
+        return (
+          <div
+            className={`repair-drone ${drone.className}`}
+            key={drone.key}
+            style={{
+              '--drone-x': `${position.x}px`,
+              '--drone-y': `${position.y}px`,
+              '--drone-scale': position.scale ?? 1,
+            }}
+          >
+            <strong>{drone.label}</strong>
+            <span />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -308,7 +349,11 @@ function PasswordVisibilityIcon({ visible }) {
 
 export default function Login() {
   const navigate = useNavigate();
+  const droneRecallRunRef = useRef(0);
+  const droneRecallTimerRef = useRef([]);
+  const droneSequenceRef = useRef(null);
   const [showLoginCard, setShowLoginCard] = useState(false);
+  const [droneSequence, setDroneSequence] = useState({ active: false, id: 0, starts: null, positions: null, targets: [], returning: false });
   const [authMode, setAuthMode] = useState('login');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -324,13 +369,150 @@ export default function Login() {
   const isRegister = authMode === 'register';
   const isForgotPassword = authMode === 'forgot';
 
+  const clearDroneRecallTimers = () => {
+    droneRecallTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    droneRecallTimerRef.current = [];
+  };
+
+  const waitForDroneRecall = (duration, runId) => new Promise((resolve) => {
+    const timerId = window.setTimeout(() => {
+      droneRecallTimerRef.current = droneRecallTimerRef.current.filter((id) => id !== timerId);
+      resolve();
+    }, duration);
+    droneRecallTimerRef.current.push(timerId);
+  });
+
+  const getLinePositions = (target) => DRONE_RECALL_ITEMS.reduce((positions, drone) => {
+    positions[drone.key] = {
+      x: target.x + drone.offset - 21,
+      y: target.y - 9,
+      scale: 1,
+    };
+    return positions;
+  }, {});
+
+  const getCapturedDronePositions = () => DRONE_RECALL_ITEMS.reduce((positions, drone) => {
+    const activeNode = document.querySelector(`.drone-recall-overlay ${drone.selector}`);
+    const sceneNode = document.querySelector(`.recovery-drones ${drone.selector}`);
+    const rect = (activeNode || sceneNode)?.getBoundingClientRect();
+    positions[drone.key] = rect ? { x: rect.left, y: rect.top, scale: 1 } : { x: 0, y: 0, scale: 1 };
+    return positions;
+  }, {});
+
+  const runDroneRecallQueue = async (runId) => {
+    await waitForDroneRecall(50, runId);
+    let targetIndex = 0;
+
+    while (droneRecallRunRef.current === runId) {
+      let latest = droneSequenceRef.current;
+      if (!latest?.active) {
+        return;
+      }
+
+      if (targetIndex >= latest.targets.length) {
+        if (latest.targets.length < 3) {
+          await waitForDroneRecall(DRONE_QUEUE_WAIT_MS, runId);
+          latest = droneSequenceRef.current;
+          if (targetIndex < latest.targets.length) {
+            continue;
+          }
+        }
+        break;
+      }
+
+      const target = latest.targets[targetIndex];
+      setDroneSequence((current) => (
+        current.id === runId
+          ? (() => {
+              const next = { ...current, positions: getLinePositions(target), returning: false };
+              droneSequenceRef.current = next;
+              return next;
+            })()
+          : current
+      ));
+      await waitForDroneRecall(DRONE_MOVE_MS + (DRONE_STAGGER_MS * 2) + DRONE_TARGET_HOLD_MS, runId);
+      targetIndex += 1;
+    }
+
+    const latest = droneSequenceRef.current;
+    if (droneRecallRunRef.current !== runId || !latest?.active) {
+      return;
+    }
+
+    setDroneSequence((current) => (
+      current.id === runId
+        ? (() => {
+            const next = { ...current, positions: current.starts, returning: true };
+            droneSequenceRef.current = next;
+            return next;
+          })()
+        : current
+    ));
+    await waitForDroneRecall(DRONE_MOVE_MS + (DRONE_STAGGER_MS * 2) + DRONE_RETURN_SETTLE_MS, runId);
+
+    if (droneRecallRunRef.current === runId) {
+      setDroneSequence((current) => (
+        current.id === runId
+          ? (() => {
+              const next = { ...current, active: false, starts: null, positions: null, targets: [], returning: false };
+              droneSequenceRef.current = next;
+              return next;
+            })()
+          : current
+      ));
+    }
+  };
+
   useEffect(() => {
     const revealTimer = window.setTimeout(() => {
       setShowLoginCard(true);
     }, LOGIN_REVEAL_DELAY_MS);
 
-    return () => window.clearTimeout(revealTimer);
+    return () => {
+      window.clearTimeout(revealTimer);
+      clearDroneRecallTimers();
+    };
   }, []);
+
+  useEffect(() => {
+    droneSequenceRef.current = droneSequence;
+  }, [droneSequence]);
+
+  const handleLoginPageClick = (event) => {
+    if (event.target.closest('.login-card')) {
+      return;
+    }
+
+    const targetX = Math.max(130, Math.min(window.innerWidth - 130, event.clientX));
+    const targetY = Math.max(90, Math.min(window.innerHeight - 150, event.clientY));
+    const target = { x: targetX, y: targetY };
+    const latest = droneSequenceRef.current;
+
+    if (latest?.active && !latest.returning) {
+      if (latest.targets.length >= 3) {
+        return;
+      }
+      setDroneSequence((current) => (
+        current.active && current.id === latest.id && current.targets.length < 3
+          ? (() => {
+              const next = { ...current, targets: [...current.targets, target] };
+              droneSequenceRef.current = next;
+              return next;
+            })()
+          : current
+      ));
+      return;
+    }
+
+    clearDroneRecallTimers();
+    const runId = droneRecallRunRef.current + 1;
+    droneRecallRunRef.current = runId;
+    const starts = getCapturedDronePositions();
+    const nextSequence = { active: true, id: runId, starts, positions: starts, targets: [target], returning: false };
+    droneSequenceRef.current = nextSequence;
+    setDroneSequence(nextSequence);
+    runDroneRecallQueue(runId);
+  };
 
   const getErrorMessage = (err) => {
     const data = err.response?.data;
@@ -454,8 +636,8 @@ export default function Login() {
   };
 
   return (
-    <main className="login-container">
-      <InfrastructureScene />
+    <main className="login-container" onClick={handleLoginPageClick}>
+      <InfrastructureScene droneSequence={droneSequence} />
 
       {!showLoginCard && (
         <p className="login-splash-status" role="status" aria-live="polite">

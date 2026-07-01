@@ -164,6 +164,12 @@ const LOCAL_SERVER_ID = 'local';
 const NOTIFICATION_LIMIT = 150;
 const IDLE_LOGOUT_MS = 5 * 60 * 1000;
 const IDLE_LOGOUT_CHECK_MS = 10 * 1000;
+
+const readSelectedEnvironment = () => {
+  if (typeof window === 'undefined') return '';
+  const storedEnvironment = sessionStorage.getItem(SELECTED_ENVIRONMENT_STORAGE_KEY);
+  return NOTIFICATION_ENVIRONMENTS.includes(storedEnvironment) ? storedEnvironment : '';
+};
 const KUBERNETES_NAMESPACE_STORAGE_KEY = 'vitel-k8s-namespaces';
 const KUBERNETES_NAMESPACE_EVENT = 'vitel-k8s-namespaces-updated';
 const buildImageAction = homeActions.find((action) => action.id === 'image');
@@ -452,13 +458,9 @@ export default function Home() {
   const [playLoginEntrance, setPlayLoginEntrance] = useState(false);
   const [environmentSelectorOpen, setEnvironmentSelectorOpen] = useState(() => (
     typeof window !== 'undefined'
-    && sessionStorage.getItem(ENVIRONMENT_SELECTOR_STORAGE_KEY) === 'pending'
+    && (sessionStorage.getItem(ENVIRONMENT_SELECTOR_STORAGE_KEY) === 'pending' || !readSelectedEnvironment())
   ));
-  const [selectedEnvironment, setSelectedEnvironment] = useState(() => (
-    typeof window !== 'undefined'
-      ? sessionStorage.getItem(SELECTED_ENVIRONMENT_STORAGE_KEY) || 'docker'
-      : 'docker'
-  ));
+  const [selectedEnvironment, setSelectedEnvironment] = useState(() => readSelectedEnvironment());
   const [activeAction, setActiveAction] = useState(() => getActionForPath(location.pathname));
   const [manualMenuOpen, setManualMenuOpen] = useState(false);
   const [rbacMenuOpen, setRbacMenuOpen] = useState(false);
@@ -4924,7 +4926,7 @@ function EnvironmentSelectionModal({ onSelectDocker, onSelectKubernetes }) {
         </header>
 
         <div className="environment-selector-options">
-          <button type="button" className="environment-option docker" onClick={onSelectDocker} autoFocus>
+          <button type="button" className="environment-option docker" onClick={onSelectDocker}>
             <span className="environment-option-image" aria-hidden="true">
               <img src={dockerEnvironmentImage} alt="" />
             </span>

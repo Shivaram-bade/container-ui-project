@@ -782,6 +782,38 @@
 .drone-b { right: 16vw; top: 22vh; animation: dronePathTwo 23s ease-in-out infinite; }
 .drone-c { right: 24vw; top: 46vh; animation: dronePathThree 17s ease-in-out infinite; }
 
+.recovery-drones.drone-recall-muted .repair-drone {
+  opacity: 0;
+  animation-play-state: paused;
+}
+
+.drone-recall-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.drone-recall-overlay .repair-drone {
+  left: 0;
+  right: auto;
+  top: 0;
+  z-index: 1;
+  opacity: 1;
+  animation: none;
+  transform: translate3d(var(--drone-x), var(--drone-y), 0) scale(var(--drone-scale, 1));
+  transition: transform 2.6s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.drone-recall-overlay .drone-b {
+  transition-delay: 0.45s;
+}
+
+.drone-recall-overlay .drone-c {
+  transition-delay: 0.9s;
+}
+
 .ai-monitor {
   position: absolute;
   right: 19vw;

@@ -200,6 +200,84 @@ const saveKubernetesNamespace = (namespaceName) => {
   }
 };
 
+const deleteKubernetesNamespaces = (namespaceNames) => {
+  const selectedNames = Array.isArray(namespaceNames) ? namespaceNames : [];
+  const removableNames = new Set(selectedNames.map((name) => String(name).trim()).filter((name) => name && name !== 'default'));
+  const next = readStoredKubernetesNamespaces().filter((name) => name !== 'default' && !removableNames.has(name));
+  try {
+    sessionStorage.setItem(KUBERNETES_NAMESPACE_STORAGE_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent(KUBERNETES_NAMESPACE_EVENT, { detail: { namespaces: ['default', ...next] } }));
+  } catch (error) {
+    // Ignore browser storage failures; the preview UI can still update local state.
+  }
+  return ['default', ...next];
+};
+
+const KUBERNETES_OBJECT_STORAGE_KEYS = {
+  service: 'vitel-k8s-services',
+  configmap: 'vitel-k8s-configmaps',
+  secret: 'vitel-k8s-secrets',
+};
+
+const getKubernetesObjectId = (name, namespace = 'default') => `${namespace || 'default'}::${name}`;
+
+const readStoredKubernetesObjects = (objectType) => {
+  const storageKey = KUBERNETES_OBJECT_STORAGE_KEYS[objectType];
+  if (!storageKey) return [];
+  try {
+    const value = JSON.parse(sessionStorage.getItem(storageKey) || '[]');
+    return Array.isArray(value)
+      ? value.filter((item) => item && item.id && item.name)
+      : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const saveKubernetesObject = (objectType, object) => {
+  const storageKey = KUBERNETES_OBJECT_STORAGE_KEYS[objectType];
+  if (!storageKey || !object?.name) return [];
+  const nextObject = {
+    ...object,
+    namespace: object.namespace || 'default',
+    id: object.id || getKubernetesObjectId(object.name, object.namespace),
+    createdAt: object.createdAt || new Date().toISOString(),
+  };
+  const next = [
+    nextObject,
+    ...readStoredKubernetesObjects(objectType).filter((item) => item.id !== nextObject.id),
+  ];
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(next));
+  } catch (error) {
+    // Ignore browser storage failures; local state can still show the preview item.
+  }
+  return next;
+};
+
+const deleteKubernetesObjects = (objectType, objectIds) => {
+  const storageKey = KUBERNETES_OBJECT_STORAGE_KEYS[objectType];
+  if (!storageKey) return [];
+  const selectedIds = new Set(Array.isArray(objectIds) ? objectIds : []);
+  const next = readStoredKubernetesObjects(objectType).filter((item) => !selectedIds.has(item.id));
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(next));
+  } catch (error) {
+    // Ignore browser storage failures; local state can still remove selected items.
+  }
+  return next;
+};
+
+const getKubernetesDeleteCommand = (objectType, objects, placeholder = '<name>') => {
+  const objectList = Array.isArray(objects) ? objects : [];
+  const resourceName = objectType === 'service' ? 'service' : objectType;
+  if (!objectList.length) return `kubectl delete ${resourceName} ${placeholder}`;
+  return objectList.map((object) => {
+    const namespaceArg = object.namespace && object.namespace !== 'default' ? ` -n ${object.namespace}` : '';
+    return `kubectl delete ${resourceName} ${object.name}${namespaceArg}`;
+  }).join('\n');
+};
+
 const NOTIFICATION_ENVIRONMENTS = ['docker', 'kubernetes'];
 
 const getNotificationStorageKey = (user, environment = 'docker') => `vitel-notifications:${user?.id || user?.username || 'default'}:${environment}`;
@@ -4973,7 +5051,24 @@ function KubernetesPlaceholderPanel({ action, onNotify, onAuthBusyChange }) {
   );
 }
 
+const getPodNamespaceArg = (namespace) => (namespace && namespace !== 'default' ? ` -n ${namespace}` : '');
+
+const getKubernetesPodCommand = (pod, action) => {
+  const namespaceArg = getPodNamespaceArg(pod.namespace);
+  if (action === 'describe') return `kubectl describe pod ${pod.name}${namespaceArg}`;
+  if (action === 'logs') return `kubectl logs -f ${pod.name}${namespaceArg}`;
+  if (action === 'terminal') return `kubectl exec -it ${pod.name}${namespaceArg} -- /bin/sh`;
+  if (action === 'delete') return `kubectl delete pod ${pod.name}${namespaceArg}`;
+  if (action === 'stop' && pod.ownerKind === 'Deployment' && pod.ownerName) {
+    return `kubectl scale deployment/${pod.ownerName}${namespaceArg} --replicas=0`;
+  }
+  if (action === 'stop') return `kubectl delete pod ${pod.name}${namespaceArg}`;
+  return `kubectl get pod ${pod.name}${namespaceArg} -o wide`;
+};
+
 function KubernetesPodCommandPanel({ onNotify }) {
+  const podOutputTimerRef = useRef(null);
+  const [podTab, setPodTab] = useState('create');
   const [resourceName, setResourceName] = useState('');
   const [imageName, setImageName] = useState('');
   const [registryMode, setRegistryMode] = useState('docker-hub');
@@ -4982,6 +5077,10 @@ function KubernetesPodCommandPanel({ onNotify }) {
   const [operationType, setOperationType] = useState('pod');
   const [namespace, setNamespace] = useState('default');
   const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [runningPods, setRunningPods] = useState([]);
+  const [stoppedPods, setStoppedPods] = useState([]);
+  const [selectedPod, setSelectedPod] = useState(null);
+  const [podActionDialog, setPodActionDialog] = useState(null);
   const [outputVisible, setOutputVisible] = useState(false);
   const [output, setOutput] = useState('');
 
@@ -5001,14 +5100,39 @@ function KubernetesPodCommandPanel({ onNotify }) {
     ? `kubectl run ${commandName} --image=${resolvedImage}${namespaceSegment}`
     : `kubectl create ${selectedOperation} ${commandName} --image=${resolvedImage}${namespaceSegment}`;
   const canCreateCommand = Boolean(normalizedName && normalizedImage && (registryMode !== 'custom' || registryPrefix));
+  const visiblePods = podTab === 'stopped' ? stoppedPods : runningPods;
 
   useEffect(() => {
     const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
     window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
-    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => {
+      window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+      window.clearTimeout(podOutputTimerRef.current);
+    };
   }, []);
 
   const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
+
+  const resetPodCommandBuilder = () => {
+    setResourceName('');
+    setImageName('');
+    setRegistryMode('docker-hub');
+    setCustomRegistry('');
+    setCommandType('run');
+    setOperationType('pod');
+  };
+
+  const showPodOutput = (title, lines, pod = null, autoHideMs = 0) => {
+    window.clearTimeout(podOutputTimerRef.current);
+    setOutput([title, ...lines].join('\n'));
+    setOutputVisible(true);
+    if (pod) setSelectedPod(pod);
+    if (autoHideMs) {
+      podOutputTimerRef.current = window.setTimeout(() => {
+        setOutputVisible(false);
+      }, autoHideMs);
+    }
+  };
 
   const handleCommandTypeChange = (value) => {
     setCommandType(value);
@@ -5023,24 +5147,123 @@ function KubernetesPodCommandPanel({ onNotify }) {
       : registryMode === 'local'
         ? 'Local registry'
         : registryPrefix;
-    setOutput([
+    const nextPod = {
+      id: `preview-${Date.now()}`,
+      name: normalizedName,
+      namespace,
+      status: 'Running',
+      image: resolvedImage,
+      ready: '1/1',
+      restarts: 0,
+      age: 'new',
+      node: 'pending-scheduler',
+      serviceName: `${normalizedName}-service`,
+      volumes: [],
+      ownerKind: selectedOperation === 'deployment' ? 'Deployment' : 'Pod',
+      ownerName: normalizedName,
+    };
+    setRunningPods((current) => [nextPod, ...current.filter((pod) => pod.name !== normalizedName || pod.namespace !== namespace)]);
+    showPodOutput(
       '$ ' + generatedCommand,
-      `Command: ${commandType}`,
-      `Operation type: ${selectedOperation}`,
-      `Namespace: ${namespace}`,
-      `Docker registry: ${registryLabel}`,
-      'Status: command preview generated. Kubernetes execution is not connected yet.',
-    ].join('\n'));
-    setOutputVisible(true);
+      [
+        `Command: ${commandType}`,
+        `Operation type: ${selectedOperation}`,
+        `Namespace: ${namespace}`,
+        `Docker registry: ${registryLabel}`,
+        'Preview status: pod added to Running Pods view. Backend kubectl execution is not connected yet.',
+      ],
+      nextPod,
+      5000
+    );
+    resetPodCommandBuilder();
     onNotify?.(`${selectedOperation} command preview generated for ${normalizedName}.`, 'Kubernetes Pods');
   };
 
+  const handlePodAction = (pod, action) => {
+    const command = getKubernetesPodCommand(pod, action);
+    const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+    const infoLines = [
+      `Pod: ${pod.name}`,
+      `Namespace: ${pod.namespace}`,
+      `Status: ${pod.status}`,
+      `Image: ${pod.image}`,
+      `Ready: ${pod.ready}`,
+      `Restarts: ${pod.restarts}`,
+      `Node: ${pod.node}`,
+      `Attached service: ${pod.serviceName || 'Not attached'}`,
+      `Attached volumes: ${pod.volumes.length ? pod.volumes.join(', ') : 'None'}`,
+      `Owner: ${pod.ownerKind}/${pod.ownerName}`,
+    ];
+
+    if (['describe', 'logs', 'terminal'].includes(action)) {
+      const modalLines = action === 'describe'
+        ? [`Action: ${actionLabel}`, ...infoLines]
+        : [`$ ${command}`];
+      setPodActionDialog({
+        title: action === 'terminal' ? 'Open Pod Terminal' : `${actionLabel} Pod`,
+        command,
+        pod,
+        lines: modalLines,
+      });
+      setSelectedPod(pod);
+      resetPodCommandBuilder();
+      return;
+    }
+    if (action === 'stop') {
+      const stoppedPod = { ...pod, status: pod.ownerKind === 'Deployment' ? 'Scaled to 0' : 'Stopped', ready: '0/1' };
+      setRunningPods((current) => current.filter((item) => item.id !== pod.id));
+      setStoppedPods((current) => [stoppedPod, ...current.filter((item) => item.id !== pod.id)]);
+    }
+    if (action === 'delete') {
+      setRunningPods((current) => current.filter((item) => item.id !== pod.id));
+      setStoppedPods((current) => current.filter((item) => item.id !== pod.id));
+    }
+
+    setSelectedPod(pod);
+    resetPodCommandBuilder();
+    if (action === 'delete') {
+      onNotify?.(`Delete command preview generated for pod ${pod.name}.`, 'Kubernetes Pods');
+    }
+  };
+
+  const renderPodCard = (pod) => (
+    <article className="k8s-pod-card" key={pod.id}>
+      <header>
+        <div>
+          <strong>{pod.name}</strong>
+          <span>{pod.namespace}</span>
+        </div>
+        <span className={`k8s-pod-status ${pod.status.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}>{pod.status}</span>
+      </header>
+      <dl className="k8s-pod-info-grid">
+        <div><dt>Image</dt><dd>{pod.image}</dd></div>
+        <div><dt>Ready</dt><dd>{pod.ready}</dd></div>
+        <div><dt>Restarts</dt><dd>{pod.restarts}</dd></div>
+        <div><dt>Age</dt><dd>{pod.age}</dd></div>
+        <div><dt>Node</dt><dd>{pod.node}</dd></div>
+        <div><dt>Service</dt><dd>{pod.serviceName || 'Not attached'}</dd></div>
+        <div><dt>Volumes</dt><dd>{pod.volumes.length ? pod.volumes.join(', ') : 'None'}</dd></div>
+        <div><dt>Owner</dt><dd>{pod.ownerKind}/{pod.ownerName}</dd></div>
+      </dl>
+      <div className="k8s-pod-command-strip">
+        <code>{getKubernetesPodCommand(pod, 'describe')}</code>
+      </div>
+      <div className="k8s-pod-actions">
+        <button type="button" className="home-secondary-button" onClick={() => handlePodAction(pod, 'describe')}>Describe</button>
+        <button type="button" className="home-secondary-button" onClick={() => handlePodAction(pod, 'logs')}>Logs</button>
+        <button type="button" className="home-secondary-button" onClick={() => handlePodAction(pod, 'terminal')}>Open Terminal</button>
+        {podTab === 'running' ? <button type="button" className="home-secondary-button" onClick={() => handlePodAction(pod, 'stop')}>Stop</button> : null}
+        <button type="button" className="home-danger-button" onClick={() => handlePodAction(pod, 'delete')}>Delete</button>
+      </div>
+    </article>
+  );
+
   return (
-    <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes pod command builder">
+    <section className="home-panel kubernetes-command-panel k8s-pod-panel" aria-label="Kubernetes pod command builder">
       <div className="k8s-command-heading">
         <div>
-          <h2>Pod Command Builder</h2>
-          <p>Create a kubectl command preview for Pod or Deployment operations. Docker Hub is selected by default.</p>
+          <h2>Pod Workspace</h2>
+          <p>Create pod commands, review running pods, inspect logs, open terminal commands, stop workloads, and delete pods with kubectl previews.</p>
         </div>
         <div className="k8s-command-preview-card">
           <span>Generated command</span>
@@ -5048,95 +5271,101 @@ function KubernetesPodCommandPanel({ onNotify }) {
         </div>
       </div>
 
-      <div className="k8s-command-form">
-        <label>
-          <span>Name</span>
-          <input
-            type="text"
-            value={resourceName}
-            onChange={(event) => setResourceName(event.target.value)}
-            placeholder="nginx"
-          />
-        </label>
-
-        <label>
-          <span>Image name</span>
-          <input
-            type="text"
-            value={imageName}
-            onChange={(event) => setImageName(event.target.value)}
-            placeholder="nginx:latest"
-          />
-        </label>
-
-        <label>
-          <span>Docker registry</span>
-          <select value={registryMode} onChange={(event) => setRegistryMode(event.target.value)}>
-            <option value="docker-hub">Docker Hub default</option>
-          </select>
-          <small>Default uses Docker Hub, so no registry prefix is added.</small>
-        </label>
-
-        <label>
-          <span>Namespace</span>
-          <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
-            {namespaces.map((namespaceName) => (
-              <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
-            ))}
-          </select>
-          <small>Namespaces created from the Namespace tab appear here.</small>
-        </label>
-
-        {registryMode === 'custom' ? (
-          <label>
-            <span>Custom registry URL</span>
-            <input
-              type="text"
-              value={customRegistry}
-              onChange={(event) => setCustomRegistry(event.target.value)}
-              placeholder="registry.example.com"
-            />
-          </label>
-        ) : null}
-
-        <label>
-          <span>Command</span>
-          <select value={commandType} onChange={(event) => handleCommandTypeChange(event.target.value)}>
-            <option value="run">run</option>
-            <option value="create">create</option>
-          </select>
-        </label>
-
-        <label>
-          <span>Operation type</span>
-          <select
-            value={selectedOperation}
-            onChange={(event) => setOperationType(event.target.value)}
-            disabled={commandType === 'run'}
-          >
-            <option value="pod">pod</option>
-            <option value="deployment">deployment</option>
-          </select>
-          {commandType === 'run' ? <small>Run command uses pod operation by default.</small> : null}
-        </label>
+      <div className="resource-tabs k8s-pod-tabs" role="tablist" aria-label="Kubernetes pod tabs">
+        <button type="button" role="tab" className={podTab === 'create' ? 'active' : ''} onClick={() => setPodTab('create')}>Create Pod</button>
+        <button type="button" role="tab" className={podTab === 'running' ? 'active' : ''} onClick={() => setPodTab('running')}>Running Pods</button>
+        <button type="button" role="tab" className={podTab === 'stopped' ? 'active' : ''} onClick={() => setPodTab('stopped')}>Stopped Pods</button>
       </div>
 
-      <div className="k8s-command-actions">
-        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
-          Create Pod
-        </button>
-        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
-          {outputVisible ? 'Hide Output View' : 'Output View'}
-        </button>
-      </div>
+      {podTab === 'create' ? (
+        <>
+          <div className="k8s-command-form">
+            <label>
+              <span>Name</span>
+              <input type="text" value={resourceName} onChange={(event) => setResourceName(event.target.value)} placeholder="nginx" />
+            </label>
+            <label>
+              <span>Image name</span>
+              <input type="text" value={imageName} onChange={(event) => setImageName(event.target.value)} placeholder="nginx:latest" />
+            </label>
+            <label>
+              <span>Docker registry</span>
+              <select value={registryMode} onChange={(event) => setRegistryMode(event.target.value)}>
+                <option value="docker-hub">Docker Hub default</option>
+                <option value="local">Local registry</option>
+                <option value="custom">Custom registry</option>
+              </select>
+              <small>Default uses Docker Hub, so no registry prefix is added.</small>
+            </label>
+            <label>
+              <span>Namespace</span>
+              <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+                {namespaces.map((namespaceName) => <option value={namespaceName} key={namespaceName}>{namespaceName}</option>)}
+              </select>
+            </label>
+            {registryMode === 'custom' ? (
+              <label>
+                <span>Custom registry URL</span>
+                <input type="text" value={customRegistry} onChange={(event) => setCustomRegistry(event.target.value)} placeholder="registry.example.com" />
+              </label>
+            ) : null}
+            <label>
+              <span>Command</span>
+              <select value={commandType} onChange={(event) => handleCommandTypeChange(event.target.value)}>
+                <option value="run">run</option>
+                <option value="create">create</option>
+              </select>
+            </label>
+            <label>
+              <span>Operation type</span>
+              <select value={selectedOperation} onChange={(event) => setOperationType(event.target.value)} disabled={commandType === 'run'}>
+                <option value="pod">pod</option>
+                <option value="deployment">deployment</option>
+              </select>
+              {commandType === 'run' ? <small>Run command uses pod operation by default.</small> : null}
+            </label>
+          </div>
+          <div className="k8s-command-actions">
+            <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>Create Pod</button>
+            <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+              {outputVisible ? 'Hide Output View' : 'Output View'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="k8s-pod-list">
+          {visiblePods.length ? visiblePods.map(renderPodCard) : (
+            <div className="resource-empty-state">No {podTab === 'running' ? 'running' : 'stopped'} pods in this preview.</div>
+          )}
+        </div>
+      )}
 
-      {outputVisible ? (
+      {outputVisible && podTab === 'create' ? (
         <div className="k8s-command-output">
           <div>
             <strong>Output View</strong>
-            <span>Preview only</span>
+            <span>kubectl preview</span>
           </div>
-          <pre>{output || ['$ ' + generatedCommand, 'Click Create to generate output.'].join('\n')}</pre>
+          <pre>{output || ['$ ' + (podTab === 'create' ? generatedCommand : 'kubectl get pods -A -o wide'), 'Click an action to generate output.'].join('\n')}</pre>
+        </div>
+      ) : null}
+
+      {podActionDialog ? (
+        <div className="output-modal-backdrop" role="presentation">
+          <div className="k8s-pod-action-modal" role="dialog" aria-modal="true" aria-labelledby="k8s-pod-action-title">
+            <div className="output-modal-heading">
+              <div>
+                <h3 id="k8s-pod-action-title">{podActionDialog.title}</h3>
+                <p>{podActionDialog.pod.name} in {podActionDialog.pod.namespace}</p>
+              </div>
+              <button type="button" onClick={() => setPodActionDialog(null)}>Close</button>
+            </div>
+            <div className="k8s-pod-modal-command">
+              <span>kubectl command</span>
+              <code>{podActionDialog.command}</code>
+            </div>
+            <pre className="k8s-pod-modal-output">{podActionDialog.lines.join('\n')}</pre>
+          </div>
         </div>
       ) : null}
     </section>
@@ -5144,18 +5373,53 @@ function KubernetesPodCommandPanel({ onNotify }) {
 }
 
 function KubernetesNamespaceCommandPanel({ onNotify }) {
+  const namespaceOutputTimerRef = useRef(null);
+  const [namespaceTab, setNamespaceTab] = useState('create');
   const [namespaceName, setNamespaceName] = useState('');
   const [operationType, setOperationType] = useState('create');
+  const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [selectedNamespaces, setSelectedNamespaces] = useState([]);
+  const [namespaceMessage, setNamespaceMessage] = useState('');
   const [outputVisible, setOutputVisible] = useState(false);
   const [output, setOutput] = useState('');
 
   const normalizedNamespace = namespaceName.trim();
   const commandNamespace = normalizedNamespace || '<namespace>';
   const generatedCommand = `kubectl ${operationType} namespace ${commandNamespace}`;
+  const deletableNamespaces = namespaces.filter((name) => name !== 'default');
+  const deleteCommand = `kubectl delete namespace ${selectedNamespaces.length ? selectedNamespaces.join(' ') : '<namespace>'}`;
+  const displayedCommand = namespaceTab === 'create' ? generatedCommand : deleteCommand;
   const canCreateCommand = Boolean(normalizedNamespace);
+  const canDeleteNamespaces = selectedNamespaces.length > 0;
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => {
+      const nextNamespaces = readStoredKubernetesNamespaces();
+      setNamespaces(nextNamespaces);
+      setSelectedNamespaces((current) => current.filter((name) => nextNamespaces.includes(name) && name !== 'default'));
+    };
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => {
+      window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+      window.clearTimeout(namespaceOutputTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!namespaceMessage) return undefined;
+    const timer = window.setTimeout(() => setNamespaceMessage(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [namespaceMessage]);
+
+  const resetNamespaceCreateForm = () => {
+    setNamespaceName('');
+    setOperationType('create');
+  };
 
   const handleCreateCommand = () => {
     saveKubernetesNamespace(normalizedNamespace);
+    setNamespaces(readStoredKubernetesNamespaces());
+    setNamespaceMessage(`Namespace ${normalizedNamespace} created.`);
     setOutput([
       '$ ' + generatedCommand,
       `Operation: ${operationType}`,
@@ -5163,51 +5427,121 @@ function KubernetesNamespaceCommandPanel({ onNotify }) {
       'Status: command preview generated. Kubernetes execution is not connected yet.',
     ].join('\n'));
     setOutputVisible(true);
+    resetNamespaceCreateForm();
+    window.clearTimeout(namespaceOutputTimerRef.current);
+    namespaceOutputTimerRef.current = window.setTimeout(() => {
+      setOutputVisible(false);
+    }, 5000);
     onNotify?.(`Namespace ${normalizedNamespace} command preview generated.`, 'Kubernetes Namespaces');
+  };
+
+  const toggleNamespaceSelection = (namespace) => {
+    if (namespace === 'default') return;
+    setSelectedNamespaces((current) => (
+      current.includes(namespace)
+        ? current.filter((name) => name !== namespace)
+        : [...current, namespace]
+    ));
+  };
+
+  const toggleAllNamespaces = () => {
+    const allSelected = deletableNamespaces.length > 0 && deletableNamespaces.every((name) => selectedNamespaces.includes(name));
+    setSelectedNamespaces(allSelected ? [] : deletableNamespaces);
+  };
+
+  const handleDeleteNamespaces = () => {
+    if (!canDeleteNamespaces) return;
+    const deletedNames = [...selectedNamespaces];
+    const nextNamespaces = deleteKubernetesNamespaces(deletedNames);
+    setNamespaces(nextNamespaces);
+    setSelectedNamespaces([]);
+    setNamespaceMessage(`${deletedNames.length} namespace${deletedNames.length === 1 ? '' : 's'} deleted.`);
+    onNotify?.(`${deletedNames.length} namespace${deletedNames.length === 1 ? '' : 's'} delete command preview generated.`, 'Kubernetes Namespaces');
   };
 
   return (
     <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes namespace command builder">
       <div className="k8s-command-heading">
         <div>
-          <h2>Namespace Command Builder</h2>
-          <p>Create a kubectl namespace command preview. Enter a namespace name and review the output before execution is connected.</p>
+          <h2>Namespace Workspace</h2>
+          <p>Create namespaces, review existing namespaces, and delete selected namespaces with kubectl previews.</p>
         </div>
         <div className="k8s-command-preview-card">
           <span>Generated command</span>
-          <code>{generatedCommand}</code>
+          <code>{displayedCommand}</code>
         </div>
       </div>
 
-      <div className="k8s-command-form">
-        <label>
-          <span>Namespace name</span>
-          <input
-            type="text"
-            value={namespaceName}
-            onChange={(event) => setNamespaceName(event.target.value)}
-            placeholder="app"
-          />
-        </label>
-
-        <label>
-          <span>Operation</span>
-          <select value={operationType} onChange={(event) => setOperationType(event.target.value)}>
-            <option value="create">create</option>
-          </select>
-        </label>
+      <div className="resource-tabs k8s-namespace-tabs" role="tablist" aria-label="Kubernetes namespace tabs">
+        <button type="button" role="tab" className={namespaceTab === 'create' ? 'active' : ''} onClick={() => setNamespaceTab('create')}>Create Namespace</button>
+        <button type="button" role="tab" className={namespaceTab === 'existing' ? 'active' : ''} onClick={() => setNamespaceTab('existing')}>Existing Namespace</button>
       </div>
 
-      <div className="k8s-command-actions">
-        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
-          Create Namespace
-        </button>
-        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
-          {outputVisible ? 'Hide Output View' : 'Output View'}
-        </button>
-      </div>
+      {namespaceMessage ? <p className="container-message">{namespaceMessage}</p> : null}
 
-      {outputVisible ? (
+      {namespaceTab === 'create' ? (
+        <>
+          <div className="k8s-command-form">
+            <label>
+              <span>Namespace name</span>
+              <input
+                type="text"
+                value={namespaceName}
+                onChange={(event) => setNamespaceName(event.target.value)}
+                placeholder="app"
+              />
+            </label>
+
+            <label>
+              <span>Operation</span>
+              <select value={operationType} onChange={(event) => setOperationType(event.target.value)}>
+                <option value="create">create</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="k8s-command-actions">
+            <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+              Create Namespace
+            </button>
+            <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+              {outputVisible ? 'Hide Output View' : 'Output View'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="k8s-namespace-manager">
+          <div className="k8s-namespace-toolbar">
+            <button type="button" className="home-secondary-button" onClick={toggleAllNamespaces} disabled={!deletableNamespaces.length}>
+              {deletableNamespaces.length && deletableNamespaces.every((name) => selectedNamespaces.includes(name)) ? 'Clear Selection' : 'Select All'}
+            </button>
+            <button type="button" className="home-danger-button" onClick={handleDeleteNamespaces} disabled={!canDeleteNamespaces}>
+              Delete Selected
+            </button>
+          </div>
+
+          <div className="k8s-namespace-list" role="list" aria-label="Existing Kubernetes namespaces">
+            {namespaces.map((namespace) => (
+              <label className={`k8s-namespace-row ${namespace === 'default' ? 'is-protected' : ''}`} key={namespace}>
+                <input
+                  type="checkbox"
+                  checked={selectedNamespaces.includes(namespace)}
+                  disabled={namespace === 'default'}
+                  onChange={() => toggleNamespaceSelection(namespace)}
+                />
+                <span>{namespace}</span>
+                <small>{namespace === 'default' ? 'Protected' : 'Selectable'}</small>
+              </label>
+            ))}
+          </div>
+
+          {!deletableNamespaces.length ? (
+            <div className="resource-empty-state">No custom namespaces available.</div>
+          ) : null}
+        </div>
+      )}
+
+      {outputVisible && namespaceTab === 'create' ? (
         <div className="k8s-command-output">
           <div>
             <strong>Output View</strong>
@@ -5221,12 +5555,16 @@ function KubernetesNamespaceCommandPanel({ onNotify }) {
 }
 
 function KubernetesServiceCommandPanel({ onNotify }) {
+  const [serviceTab, setServiceTab] = useState('create');
   const [serviceName, setServiceName] = useState('');
   const [operationType, setOperationType] = useState('pod');
   const [serviceType, setServiceType] = useState('ClusterIP');
   const [port, setPort] = useState('');
   const [namespace, setNamespace] = useState('default');
   const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [services, setServices] = useState(() => readStoredKubernetesObjects('service'));
+  const [selectedServices, setSelectedServices] = useState([]);
+  const [serviceMessage, setServiceMessage] = useState('');
   const [outputVisible, setOutputVisible] = useState(false);
   const [output, setOutput] = useState('');
 
@@ -5237,6 +5575,10 @@ function KubernetesServiceCommandPanel({ onNotify }) {
   const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
   const generatedCommand = `kubectl expose ${operationType} ${commandServiceName} --port=${commandPort} --type=${serviceType}${namespaceSegment}`;
   const canCreateCommand = Boolean(normalizedServiceName && normalizedPort);
+  const selectedServiceObjects = services.filter((service) => selectedServices.includes(service.id));
+  const deleteCommand = getKubernetesDeleteCommand('service', selectedServiceObjects, '<service-name>');
+  const displayedCommand = serviceTab === 'create' ? generatedCommand : deleteCommand;
+  const allServicesSelected = services.length > 0 && services.every((service) => selectedServices.includes(service.id));
 
   useEffect(() => {
     const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
@@ -5244,9 +5586,25 @@ function KubernetesServiceCommandPanel({ onNotify }) {
     return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
   }, []);
 
+  useEffect(() => {
+    if (!serviceMessage) return undefined;
+    const timer = window.setTimeout(() => setServiceMessage(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [serviceMessage]);
+
   const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
 
   const handleCreateCommand = () => {
+    const nextServices = saveKubernetesObject('service', {
+      id: getKubernetesObjectId(normalizedServiceName, namespace),
+      name: normalizedServiceName,
+      namespace,
+      operationType,
+      serviceType,
+      port: normalizedPort,
+    });
+    setServices(nextServices);
+    setServiceMessage(`Service ${normalizedServiceName} created.`);
     setOutput([
       '$ ' + generatedCommand,
       `Operation type: ${operationType}`,
@@ -5259,83 +5617,140 @@ function KubernetesServiceCommandPanel({ onNotify }) {
     onNotify?.(`Service command preview generated for ${normalizedServiceName}.`, 'Kubernetes Services');
   };
 
+  const toggleServiceSelection = (serviceId) => {
+    setSelectedServices((current) => (
+      current.includes(serviceId)
+        ? current.filter((id) => id !== serviceId)
+        : [...current, serviceId]
+    ));
+  };
+
+  const toggleAllServices = () => {
+    setSelectedServices(allServicesSelected ? [] : services.map((service) => service.id));
+  };
+
+  const handleDeleteServices = () => {
+    if (!selectedServices.length) return;
+    const deletedCount = selectedServices.length;
+    const nextServices = deleteKubernetesObjects('service', selectedServices);
+    setServices(nextServices);
+    setSelectedServices([]);
+    setServiceMessage(`${deletedCount} service${deletedCount === 1 ? '' : 's'} deleted.`);
+    onNotify?.(`${deletedCount} service${deletedCount === 1 ? '' : 's'} delete command preview generated.`, 'Kubernetes Services');
+  };
+
   return (
     <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes service command builder">
       <div className="k8s-command-heading">
         <div>
-          <h2>Service Command Builder</h2>
-          <p>Create a kubectl expose command preview for Pod, Deployment, StatefulSet, ReplicaSet, or ReplicationController resources.</p>
+          <h2>Service Workspace</h2>
+          <p>Create services, review existing services, and delete selected services with kubectl previews.</p>
         </div>
         <div className="k8s-command-preview-card">
           <span>Generated command</span>
-          <code>{generatedCommand}</code>
+          <code>{displayedCommand}</code>
         </div>
       </div>
 
-      <div className="k8s-command-form">
-        <label>
-          <span>Service name</span>
-          <input
-            type="text"
-            value={serviceName}
-            onChange={(event) => setServiceName(event.target.value)}
-            placeholder="nginx"
-          />
-        </label>
+      <div className="resource-tabs k8s-object-tabs" role="tablist" aria-label="Kubernetes service tabs">
+        <button type="button" role="tab" className={serviceTab === 'create' ? 'active' : ''} onClick={() => setServiceTab('create')}>Create Service</button>
+        <button type="button" role="tab" className={serviceTab === 'existing' ? 'active' : ''} onClick={() => setServiceTab('existing')}>Existing Service</button>
+      </div>
 
-        <label>
-          <span>Operation</span>
-          <select value={operationType} onChange={(event) => setOperationType(event.target.value)}>
-            <option value="pod">pod</option>
-            <option value="deployment">deployment</option>
-            <option value="statefulset">statefulset</option>
-            <option value="replicaset">replicaset</option>
-            <option value="replicationcontroller">replicationcontroller</option>
-          </select>
-        </label>
+      {serviceMessage ? <p className="container-message">{serviceMessage}</p> : null}
 
-        <label>
-          <span>Service type</span>
-          <select value={serviceType} onChange={(event) => setServiceType(event.target.value)}>
-            <option value="ClusterIP">ClusterIP</option>
-            <option value="NodePort">NodePort</option>
-            <option value="LoadBalancer">LoadBalancer</option>
-            <option value="ExternalName">ExternalName</option>
-          </select>
-        </label>
+      {serviceTab === 'create' ? (
+        <>
+          <div className="k8s-command-form">
+            <label>
+              <span>Service name</span>
+              <input
+                type="text"
+                value={serviceName}
+                onChange={(event) => setServiceName(event.target.value)}
+                placeholder="nginx"
+              />
+            </label>
 
-        <label>
-          <span>Namespace</span>
-          <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
-            {namespaces.map((namespaceName) => (
-              <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+            <label>
+              <span>Operation</span>
+              <select value={operationType} onChange={(event) => setOperationType(event.target.value)}>
+                <option value="pod">pod</option>
+                <option value="deployment">deployment</option>
+                <option value="statefulset">statefulset</option>
+                <option value="replicaset">replicaset</option>
+                <option value="replicationcontroller">replicationcontroller</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Service type</span>
+              <select value={serviceType} onChange={(event) => setServiceType(event.target.value)}>
+                <option value="ClusterIP">ClusterIP</option>
+                <option value="NodePort">NodePort</option>
+                <option value="LoadBalancer">LoadBalancer</option>
+                <option value="ExternalName">ExternalName</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Namespace</span>
+              <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+                {namespaces.map((namespaceName) => (
+                  <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span>Port</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={port}
+                onChange={(event) => setPort(event.target.value)}
+                placeholder="80"
+              />
+            </label>
+          </div>
+
+          <div className="k8s-command-actions">
+            <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+              Create Service
+            </button>
+            <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+              {outputVisible ? 'Hide Output View' : 'Output View'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="k8s-object-manager">
+          <div className="k8s-object-toolbar">
+            <button type="button" className="home-secondary-button" onClick={toggleAllServices} disabled={!services.length}>
+              {allServicesSelected ? 'Clear Selection' : 'Select All'}
+            </button>
+            <button type="button" className="home-danger-button" onClick={handleDeleteServices} disabled={!selectedServices.length}>
+              Delete Selected
+            </button>
+          </div>
+          <div className="k8s-object-list" role="list" aria-label="Existing Kubernetes services">
+            {services.map((service) => (
+              <label className="k8s-object-row" key={service.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedServices.includes(service.id)}
+                  onChange={() => toggleServiceSelection(service.id)}
+                />
+                <span>{service.name}</span>
+                <small>{service.namespace} / {service.serviceType} / port {service.port}</small>
+              </label>
             ))}
-          </select>
-          <small>Namespaces created from the Namespace tab appear here.</small>
-        </label>
+          </div>
+          {!services.length ? <div className="resource-empty-state">No services created yet.</div> : null}
+        </div>
+      )}
 
-        <label>
-          <span>Port</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={port}
-            onChange={(event) => setPort(event.target.value)}
-            placeholder="80"
-          />
-        </label>
-      </div>
-
-      <div className="k8s-command-actions">
-        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
-          Create Service
-        </button>
-        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
-          {outputVisible ? 'Hide Output View' : 'Output View'}
-        </button>
-      </div>
-
-      {outputVisible ? (
+      {outputVisible && serviceTab === 'create' ? (
         <div className="k8s-command-output">
           <div>
             <strong>Output View</strong>
@@ -5350,15 +5765,24 @@ function KubernetesServiceCommandPanel({ onNotify }) {
 
 function KubernetesLiteralCommandPanel({ resourceType, onNotify }) {
   const isSecret = resourceType === 'secret';
-  const title = isSecret ? 'Secrets Command Builder' : 'ConfigMap Command Builder';
   const nameLabel = isSecret ? 'Secret name' : 'ConfigMap name';
   const namePlaceholder = isSecret ? 'nginx-secret' : 'nginx-config';
   const createButtonLabel = isSecret ? 'Create Secret' : 'Create ConfigMap';
+  const createTabLabel = isSecret ? 'Create Secret' : 'Create ConfigMap';
+  const existingTabLabel = isSecret ? 'Existing Secret' : 'Existing ConfigMap';
+  const existingEmptyLabel = isSecret ? 'No secrets created yet.' : 'No configmaps created yet.';
   const commandResource = isSecret ? 'secret generic' : 'configmap';
+  const deleteResource = isSecret ? 'secret' : 'configmap';
   const ariaLabel = isSecret ? 'Kubernetes secret command builder' : 'Kubernetes configmap command builder';
+  const objectLabel = isSecret ? 'secret' : 'configmap';
+  const notificationLabel = isSecret ? 'Kubernetes Secrets' : 'Kubernetes ConfigMaps';
+  const [literalTab, setLiteralTab] = useState('create');
   const [resourceName, setResourceName] = useState('');
   const [namespace, setNamespace] = useState('default');
   const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [objects, setObjects] = useState(() => readStoredKubernetesObjects(resourceType));
+  const [selectedObjects, setSelectedObjects] = useState([]);
+  const [literalMessage, setLiteralMessage] = useState('');
   const [literals, setLiterals] = useState([]);
   const [outputVisible, setOutputVisible] = useState(false);
   const [output, setOutput] = useState('');
@@ -5368,6 +5792,18 @@ function KubernetesLiteralCommandPanel({ resourceType, onNotify }) {
     window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
     return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
   }, []);
+
+  useEffect(() => {
+    setObjects(readStoredKubernetesObjects(resourceType));
+    setSelectedObjects([]);
+    setLiteralMessage('');
+  }, [resourceType]);
+
+  useEffect(() => {
+    if (!literalMessage) return undefined;
+    const timer = window.setTimeout(() => setLiteralMessage(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [literalMessage]);
 
   const normalizedResourceName = resourceName.trim();
   const commandResourceName = normalizedResourceName || (isSecret ? '<secret-name>' : '<configmap-name>');
@@ -5379,7 +5815,11 @@ function KubernetesLiteralCommandPanel({ resourceType, onNotify }) {
     : ['--from-literal=<env>=<value>'];
   const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
   const generatedCommand = `kubectl create ${commandResource} ${commandResourceName}${namespaceSegment} ${literalSegments.join(' ')}`;
+  const selectedLiteralObjects = objects.filter((object) => selectedObjects.includes(object.id));
+  const deleteCommand = getKubernetesDeleteCommand(deleteResource, selectedLiteralObjects, isSecret ? '<secret-name>' : '<configmap-name>');
+  const displayedCommand = literalTab === 'create' ? generatedCommand : deleteCommand;
   const canCreateCommand = Boolean(normalizedResourceName && validLiterals.length);
+  const allObjectsSelected = objects.length > 0 && objects.every((object) => selectedObjects.includes(object.id));
 
   const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
 
@@ -5398,6 +5838,15 @@ function KubernetesLiteralCommandPanel({ resourceType, onNotify }) {
   };
 
   const handleCreateCommand = () => {
+    const nextObjects = saveKubernetesObject(resourceType, {
+      id: getKubernetesObjectId(normalizedResourceName, namespace),
+      name: normalizedResourceName,
+      namespace,
+      literals: validLiterals,
+      literalCount: validLiterals.length,
+    });
+    setObjects(nextObjects);
+    setLiteralMessage(`${isSecret ? 'Secret' : 'ConfigMap'} ${normalizedResourceName} created.`);
     setOutput([
       '$ ' + generatedCommand,
       `Resource: ${isSecret ? 'secret' : 'configmap'}`,
@@ -5407,103 +5856,160 @@ function KubernetesLiteralCommandPanel({ resourceType, onNotify }) {
       'Status: command preview generated. Kubernetes execution is not connected yet.',
     ].join('\n'));
     setOutputVisible(true);
-    onNotify?.(`${isSecret ? 'Secret' : 'ConfigMap'} command preview generated for ${normalizedResourceName}.`, isSecret ? 'Kubernetes Secrets' : 'Kubernetes ConfigMaps');
+    onNotify?.(`${isSecret ? 'Secret' : 'ConfigMap'} command preview generated for ${normalizedResourceName}.`, notificationLabel);
+  };
+
+  const toggleObjectSelection = (objectId) => {
+    setSelectedObjects((current) => (
+      current.includes(objectId)
+        ? current.filter((id) => id !== objectId)
+        : [...current, objectId]
+    ));
+  };
+
+  const toggleAllObjects = () => {
+    setSelectedObjects(allObjectsSelected ? [] : objects.map((object) => object.id));
+  };
+
+  const handleDeleteObjects = () => {
+    if (!selectedObjects.length) return;
+    const deletedCount = selectedObjects.length;
+    const nextObjects = deleteKubernetesObjects(resourceType, selectedObjects);
+    setObjects(nextObjects);
+    setSelectedObjects([]);
+    setLiteralMessage(`${deletedCount} ${objectLabel}${deletedCount === 1 ? '' : 's'} deleted.`);
+    onNotify?.(`${deletedCount} ${objectLabel}${deletedCount === 1 ? '' : 's'} delete command preview generated.`, notificationLabel);
   };
 
   return (
     <section className="home-panel kubernetes-command-panel" aria-label={ariaLabel}>
       <div className="k8s-command-heading">
         <div>
-          <h2>{title}</h2>
+          <h2>{isSecret ? 'Secrets Workspace' : 'ConfigMap Workspace'}</h2>
           <p>{isSecret
-            ? 'Create a kubectl secret command preview from literal environment-style key/value pairs.'
-            : 'Create a kubectl configmap command preview from literal environment-style key/value pairs.'}</p>
+            ? 'Create secrets, review existing secrets, and delete selected secrets with kubectl previews.'
+            : 'Create configmaps, review existing configmaps, and delete selected configmaps with kubectl previews.'}</p>
         </div>
         <div className="k8s-command-preview-card">
           <span>Generated command</span>
-          <code>{generatedCommand}</code>
+          <code>{displayedCommand}</code>
         </div>
       </div>
 
-      <div className="k8s-command-form">
-        <label>
-          <span>{nameLabel}</span>
-          <input
-            type="text"
-            value={resourceName}
-            onChange={(event) => setResourceName(event.target.value)}
-            placeholder={namePlaceholder}
-          />
-        </label>
-
-        <label>
-          <span>Namespace</span>
-          <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
-            {namespaces.map((namespaceName) => (
-              <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
-            ))}
-          </select>
-          <small>Namespaces created from the Namespace tab appear here.</small>
-        </label>
+      <div className="resource-tabs k8s-object-tabs" role="tablist" aria-label={`Kubernetes ${objectLabel} tabs`}>
+        <button type="button" role="tab" className={literalTab === 'create' ? 'active' : ''} onClick={() => setLiteralTab('create')}>{createTabLabel}</button>
+        <button type="button" role="tab" className={literalTab === 'existing' ? 'active' : ''} onClick={() => setLiteralTab('existing')}>{existingTabLabel}</button>
       </div>
 
-      <div className="k8s-literal-builder">
-        <div className="k8s-literal-heading">
-          <div>
-            <strong>Env and value fields</strong>
-            <span>Add one or more --from-literal entries.</span>
+      {literalMessage ? <p className="container-message">{literalMessage}</p> : null}
+
+      {literalTab === 'create' ? (
+        <>
+          <div className="k8s-command-form">
+            <label>
+              <span>{nameLabel}</span>
+              <input
+                type="text"
+                value={resourceName}
+                onChange={(event) => setResourceName(event.target.value)}
+                placeholder={namePlaceholder}
+              />
+            </label>
+
+            <label>
+              <span>Namespace</span>
+              <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+                {namespaces.map((namespaceName) => (
+                  <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+                ))}
+              </select>
+            </label>
           </div>
-          <button type="button" className="home-secondary-button" onClick={addLiteralRow}>Add</button>
-        </div>
 
-        {literals.length ? (
-          <div className="k8s-literal-list">
-            {literals.map((literal, index) => (
-              <div className="k8s-literal-row" key={literal.id}>
-                <label>
-                  <span>Env</span>
-                  <input
-                    type="text"
-                    value={literal.key}
-                    onChange={(event) => updateLiteral(literal.id, 'key', event.target.value)}
-                    placeholder={index === 0 ? 'name' : 'key'}
-                  />
-                </label>
-                <label>
-                  <span>Value</span>
-                  <input
-                    type="text"
-                    value={literal.value}
-                    onChange={(event) => updateLiteral(literal.id, 'value', event.target.value)}
-                    placeholder={index === 0 ? 'admin' : 'value'}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="k8s-literal-remove"
-                  onClick={() => removeLiteral(literal.id)}
-                  aria-label="Remove literal row"
-                >
-                  ×
-                </button>
+          <div className="k8s-literal-builder">
+            <div className="k8s-literal-heading">
+              <div>
+                <strong>Env and value fields</strong>
+                <span>Add one or more --from-literal entries.</span>
               </div>
+              <button type="button" className="home-secondary-button" onClick={addLiteralRow}>Add</button>
+            </div>
+
+            {literals.length ? (
+              <div className="k8s-literal-list">
+                {literals.map((literal, index) => (
+                  <div className="k8s-literal-row" key={literal.id}>
+                    <label>
+                      <span>Env</span>
+                      <input
+                        type="text"
+                        value={literal.key}
+                        onChange={(event) => updateLiteral(literal.id, 'key', event.target.value)}
+                        placeholder={index === 0 ? 'name' : 'key'}
+                      />
+                    </label>
+                    <label>
+                      <span>Value</span>
+                      <input
+                        type="text"
+                        value={literal.value}
+                        onChange={(event) => updateLiteral(literal.id, 'value', event.target.value)}
+                        placeholder={index === 0 ? 'admin' : 'value'}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="k8s-literal-remove"
+                      onClick={() => removeLiteral(literal.id)}
+                      aria-label="Remove literal row"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="k8s-literal-empty">Click Add to enter env and value fields.</p>
+            )}
+          </div>
+
+          <div className="k8s-command-actions">
+            <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
+              {createButtonLabel}
+            </button>
+            <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+              {outputVisible ? 'Hide Output View' : 'Output View'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="k8s-object-manager">
+          <div className="k8s-object-toolbar">
+            <button type="button" className="home-secondary-button" onClick={toggleAllObjects} disabled={!objects.length}>
+              {allObjectsSelected ? 'Clear Selection' : 'Select All'}
+            </button>
+            <button type="button" className="home-danger-button" onClick={handleDeleteObjects} disabled={!selectedObjects.length}>
+              Delete Selected
+            </button>
+          </div>
+          <div className="k8s-object-list" role="list" aria-label={`Existing Kubernetes ${objectLabel}s`}>
+            {objects.map((object) => (
+              <label className="k8s-object-row" key={object.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedObjects.includes(object.id)}
+                  onChange={() => toggleObjectSelection(object.id)}
+                />
+                <span>{object.name}</span>
+                <small>{object.namespace} / {object.literalCount || object.literals?.length || 0} literal{(object.literalCount || object.literals?.length || 0) === 1 ? '' : 's'}</small>
+              </label>
             ))}
           </div>
-        ) : (
-          <p className="k8s-literal-empty">Click Add to enter env and value fields.</p>
-        )}
-      </div>
+          {!objects.length ? <div className="resource-empty-state">{existingEmptyLabel}</div> : null}
+        </div>
+      )}
 
-      <div className="k8s-command-actions">
-        <button type="button" className="home-primary-button" onClick={handleCreateCommand} disabled={!canCreateCommand}>
-          {createButtonLabel}
-        </button>
-        <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
-          {outputVisible ? 'Hide Output View' : 'Output View'}
-        </button>
-      </div>
-
-      {outputVisible ? (
+      {outputVisible && literalTab === 'create' ? (
         <div className="k8s-command-output">
           <div>
             <strong>Output View</strong>
@@ -5606,6 +6112,7 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
   const [successUser, setSuccessUser] = useState(null);
   const [detailsUser, setDetailsUser] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [openActionUserId, setOpenActionUserId] = useState(null);
   const [search, setSearch] = useState('');
   const [namespaceFilter, setNamespaceFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
@@ -5619,6 +6126,18 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
   useEffect(() => {
     loadUsers();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'manage') {
+      loadUsers();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!message) return undefined;
+    const timer = window.setTimeout(() => setMessage(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
 
   useEffect(() => {
     onBusyChange?.(creating || loading || artifactBusy);
@@ -5759,6 +6278,7 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
 
   const viewDetails = async (authUser) => {
     setMessage('');
+    setOpenActionUserId(null);
     setArtifactBusy(true);
     try {
       const response = await authService.getKubernetesAuthUser(authUser.id);
@@ -5778,6 +6298,7 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
       setMessage(`${deleteTarget.username} deleted.`);
       onNotify?.(`Kubernetes user ${deleteTarget.username} deleted.`, 'Kubernetes Authentication');
       setDeleteTarget(null);
+      setOpenActionUserId(null);
       await loadUsers();
     } catch (error) {
       setMessage(error.response?.data?.error || 'Unable to delete Kubernetes user.');
@@ -5797,6 +6318,8 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
   const namespaceOptions = Array.from(new Set([...namespaces, ...users.map((user) => user.namespace)])).filter(Boolean);
   const roleOptions = Array.from(new Set(users.map((user) => user.role_name).filter(Boolean)));
 
+  const closeActionMenu = () => setOpenActionUserId(null);
+
   return (
     <section className="home-panel k8s-auth-panel" aria-label="Kubernetes authentication">
       <div className="k8s-auth-header">
@@ -5812,7 +6335,7 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
 
       <div className="resource-tabs k8s-auth-tabs" role="tablist" aria-label="Kubernetes authentication tabs">
         <button type="button" role="tab" className={activeTab === 'create' ? 'active' : ''} onClick={() => setActiveTab('create')}>Create User</button>
-        <button type="button" role="tab" className={activeTab === 'manage' ? 'active' : ''} onClick={() => setActiveTab('manage')}>Manage Users</button>
+        <button type="button" role="tab" className={activeTab === 'manage' ? 'active' : ''} onClick={() => { setActiveTab('manage'); loadUsers(); }}>Manage Users</button>
       </div>
 
       {message ? <p className="container-message">{message}</p> : null}
@@ -5947,19 +6470,28 @@ function KubernetesAuthenticationPanel({ onNotify, onBusyChange }) {
                     <td>{user.can_access ? 'Yes' : 'Review'}</td>
                     <td>{formatKubernetesAuthDate(user.created_date)}</td>
                     <td>
-                      <details className="k8s-auth-actions-menu">
-                        <summary>Actions</summary>
-                        <div>
-                          <button type="button" onClick={() => viewDetails(user)}>View Details</button>
-                          <button type="button" onClick={() => downloadArtifact(user, 'kubeconfig')}>Download kubeconfig</button>
-                          <button type="button" onClick={() => downloadArtifact(user, 'certificate')}>Download Certificate</button>
-                          <button type="button" onClick={() => copyKubeconfig(user)}>Copy kubeconfig</button>
-                          <button type="button" disabled>Regenerate Certificate</button>
-                          <button type="button" disabled>Update Role</button>
-                          <button type="button" disabled>Update Permissions</button>
-                          <button type="button" className="danger" onClick={() => setDeleteTarget(user)}>Delete User</button>
-                        </div>
-                      </details>
+                      <div className="k8s-auth-actions-menu">
+                        <button
+                          type="button"
+                          className="k8s-auth-actions-trigger"
+                          onClick={() => setOpenActionUserId((current) => (current === user.id ? null : user.id))}
+                          aria-expanded={openActionUserId === user.id}
+                        >
+                          Actions
+                        </button>
+                        {openActionUserId === user.id ? (
+                          <div className="k8s-auth-actions-popover" role="menu">
+                            <button type="button" role="menuitem" onClick={() => viewDetails(user)}>View Details</button>
+                            <button type="button" role="menuitem" onClick={() => { closeActionMenu(); downloadArtifact(user, 'kubeconfig'); }}>Download kubeconfig</button>
+                            <button type="button" role="menuitem" onClick={() => { closeActionMenu(); downloadArtifact(user, 'certificate'); }}>Download Certificate</button>
+                            <button type="button" role="menuitem" onClick={() => { closeActionMenu(); copyKubeconfig(user); }}>Copy kubeconfig</button>
+                            <button type="button" role="menuitem" disabled>Regenerate Certificate</button>
+                            <button type="button" role="menuitem" disabled>Update Role</button>
+                            <button type="button" role="menuitem" disabled>Update Permissions</button>
+                            <button type="button" role="menuitem" className="danger" onClick={() => { closeActionMenu(); setDeleteTarget(user); }}>Delete User</button>
+                          </div>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 )) : (

@@ -214,9 +214,35 @@ const deleteKubernetesNamespaces = (namespaceNames) => {
 };
 
 const KUBERNETES_OBJECT_STORAGE_KEYS = {
+  deployment: 'vitel-k8s-deployments',
+  statefulset: 'vitel-k8s-statefulsets',
+  replicaset: 'vitel-k8s-replicasets',
+  replicationcontroller: 'vitel-k8s-replicationcontrollers',
+  crd: 'vitel-k8s-crds',
   service: 'vitel-k8s-services',
   configmap: 'vitel-k8s-configmaps',
   secret: 'vitel-k8s-secrets',
+};
+
+const KUBERNETES_AUTOSCALE_STORAGE_KEY = 'vitel-k8s-hpas';
+const KUBERNETES_RESOURCE_SETTINGS_STORAGE_KEY = 'vitel-k8s-resource-settings';
+
+const KUBERNETES_AUTOSCALE_TARGETS = [
+  { value: 'deployment', label: 'Deployment', storageType: 'deployment', placeholder: '<deployment-name>' },
+  { value: 'statefulset', label: 'StatefulSet', storageType: 'statefulset', placeholder: '<statefulset-name>' },
+  { value: 'replicaset', label: 'ReplicaSet', storageType: 'replicaset', placeholder: '<replicaset-name>' },
+  { value: 'replicationcontroller', label: 'ReplicationController', storageType: 'replicationcontroller', placeholder: '<replicationcontroller-name>' },
+  { value: 'custom-resource', label: 'Custom Resource (CRD)', storageType: 'crd', placeholder: '<custom-resource-name>' },
+];
+
+const getKubernetesAutoscaleTarget = (targetKind) => (
+  KUBERNETES_AUTOSCALE_TARGETS.find((target) => target.value === targetKind) || KUBERNETES_AUTOSCALE_TARGETS[0]
+);
+
+const readKubernetesAutoscaleTargets = (targetKind, namespace = 'default') => {
+  const target = getKubernetesAutoscaleTarget(targetKind);
+  return readStoredKubernetesObjects(target.storageType)
+    .filter((object) => (object.namespace || 'default') === (namespace || 'default'));
 };
 
 const getKubernetesObjectId = (name, namespace = 'default') => `${namespace || 'default'}::${name}`;
@@ -276,6 +302,92 @@ const getKubernetesDeleteCommand = (objectType, objects, placeholder = '<name>')
     const namespaceArg = object.namespace && object.namespace !== 'default' ? ` -n ${object.namespace}` : '';
     return `kubectl delete ${resourceName} ${object.name}${namespaceArg}`;
   }).join('\n');
+};
+
+const getKubernetesHpaId = (targetKind, targetName, namespace = 'default') => `${namespace || 'default'}::${targetKind}::${targetName}`;
+
+const readStoredKubernetesHpas = () => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(KUBERNETES_AUTOSCALE_STORAGE_KEY) || '[]');
+    return Array.isArray(value)
+      ? value.filter((item) => item && item.id && item.targetName)
+      : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const saveKubernetesHpa = (hpa) => {
+  if (!hpa?.targetKind || !hpa?.targetName) return [];
+  const nextHpa = {
+    ...hpa,
+    namespace: hpa.namespace || 'default',
+    id: hpa.id || getKubernetesHpaId(hpa.targetKind, hpa.targetName, hpa.namespace),
+    createdAt: hpa.createdAt || new Date().toISOString(),
+  };
+  const next = [
+    nextHpa,
+    ...readStoredKubernetesHpas().filter((item) => item.id !== nextHpa.id),
+  ];
+  try {
+    sessionStorage.setItem(KUBERNETES_AUTOSCALE_STORAGE_KEY, JSON.stringify(next));
+  } catch (error) {
+    // Ignore browser storage failures; local state can still show the preview item.
+  }
+  return next;
+};
+
+const deleteKubernetesHpa = (hpaId) => {
+  const next = readStoredKubernetesHpas().filter((item) => item.id !== hpaId);
+  try {
+    sessionStorage.setItem(KUBERNETES_AUTOSCALE_STORAGE_KEY, JSON.stringify(next));
+  } catch (error) {
+    // Ignore browser storage failures; local state can still remove the preview item.
+  }
+  return next;
+};
+
+const getKubernetesResourceSettingId = (targetKind, targetName, namespace = 'default') => `${namespace || 'default'}::${targetKind}::${targetName}`;
+
+const readStoredKubernetesResourceSettings = () => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(KUBERNETES_RESOURCE_SETTINGS_STORAGE_KEY) || '[]');
+    return Array.isArray(value)
+      ? value.filter((item) => item && item.id && item.targetName)
+      : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const saveKubernetesResourceSetting = (resourceSetting) => {
+  if (!resourceSetting?.targetKind || !resourceSetting?.targetName) return [];
+  const nextSetting = {
+    ...resourceSetting,
+    namespace: resourceSetting.namespace || 'default',
+    id: resourceSetting.id || getKubernetesResourceSettingId(resourceSetting.targetKind, resourceSetting.targetName, resourceSetting.namespace),
+    createdAt: resourceSetting.createdAt || new Date().toISOString(),
+  };
+  const next = [
+    nextSetting,
+    ...readStoredKubernetesResourceSettings().filter((item) => item.id !== nextSetting.id),
+  ];
+  try {
+    sessionStorage.setItem(KUBERNETES_RESOURCE_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+  } catch (error) {
+    // Ignore browser storage failures; local state can still show the preview item.
+  }
+  return next;
+};
+
+const deleteKubernetesResourceSetting = (resourceSettingId) => {
+  const next = readStoredKubernetesResourceSettings().filter((item) => item.id !== resourceSettingId);
+  try {
+    sessionStorage.setItem(KUBERNETES_RESOURCE_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+  } catch (error) {
+    // Ignore browser storage failures; local state can still remove the preview item.
+  }
+  return next;
 };
 
 const NOTIFICATION_ENVIRONMENTS = ['docker', 'kubernetes'];
@@ -753,7 +865,12 @@ export default function Home() {
   const [rbacTab, setRbacTab] = useState('user');
   const [rbacData, setRbacData] = useState({ operations: [], users: [], groups: [] });
   const [rbacLoading, setRbacLoading] = useState(false);
-  const [rbacMessage, setRbacMessage] = useState('');
+  const [rbacMessages, setRbacMessages] = useState({
+    createUser: '',
+    existingUsers: '',
+    createGroup: '',
+    existingGroups: '',
+  });
   const [rbacUsername, setRbacUsername] = useState('');
   const [rbacPassword, setRbacPassword] = useState('');
   const [rbacConfirmPassword, setRbacConfirmPassword] = useState('');
@@ -774,6 +891,7 @@ export default function Home() {
   const notificationSignalRef = useRef({});
   const notificationHydratingRef = useRef(false);
   const bellTimerRef = useRef(null);
+  const rbacMessageTimersRef = useRef({});
   const lastActivityRef = useRef(Date.now());
   const operationActiveRef = useRef(false);
   const wasOperationActiveRef = useRef(false);
@@ -834,6 +952,7 @@ export default function Home() {
   const isNetworkActive = activeAction.id === 'network';
   const isVolumeActive = activeAction.id === 'volume';
   const isRbacActive = activeAction.id === 'rbac';
+  const rbacNotificationMessage = Object.values(rbacMessages).find((message) => String(message || '').trim()) || '';
   const unreadNotificationCount = notifications.filter((notification) => !notification.read).length;
   const isOperationActive = Boolean([
     serverInfoLoading,
@@ -998,7 +1117,7 @@ export default function Home() {
       || LOCAL_SERVER_ID;
     const signals = [
       ['account', 'Account', passwordMessage],
-      ['rbac', 'Users & Access', rbacMessage],
+      ['rbac', 'Users & Access', rbacNotificationMessage],
       ['agent', 'Agent', agentMessage],
       ['container', 'Containers', containerMessage, containerServerId || LOCAL_SERVER_ID],
       ['container-action', 'Containers', containerActionMessage, containerServerId || LOCAL_SERVER_ID],
@@ -1033,7 +1152,7 @@ export default function Home() {
     });
   }, [
     passwordMessage,
-    rbacMessage,
+    rbacNotificationMessage,
     agentMessage,
     containerMessage,
     containerActionMessage,
@@ -1272,6 +1391,22 @@ export default function Home() {
     return () => window.clearInterval(refreshTimer);
   }, [isCreateAgentActive, agentTab]);
 
+  const setRbacScopedMessage = (scope, message) => {
+    window.clearTimeout(rbacMessageTimersRef.current[scope]);
+    setRbacMessages((current) => ({ ...current, [scope]: message }));
+    if (message) {
+      rbacMessageTimersRef.current[scope] = window.setTimeout(() => {
+        setRbacMessages((current) => (
+          current[scope] === message ? { ...current, [scope]: '' } : current
+        ));
+      }, 5000);
+    }
+  };
+
+  useEffect(() => () => {
+    Object.values(rbacMessageTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+  }, []);
+
   const loadRbac = async () => {
     setRbacLoading(true);
     try {
@@ -1279,7 +1414,7 @@ export default function Home() {
       setRbacData(response.data);
     } catch (error) {
       const data = error.response?.data;
-      setRbacMessage(data?.error || 'Unable to load RBAC data.');
+      setRbacScopedMessage('createUser', data?.error || 'Unable to load RBAC data.');
     } finally {
       setRbacLoading(false);
     }
@@ -1295,7 +1430,7 @@ export default function Home() {
     event.preventDefault();
     if (rbacPassword !== rbacConfirmPassword) {
       const message = 'Password mismatched, please check it again.';
-      setRbacMessage(message);
+      setRbacScopedMessage('createUser', message);
       setActiveToast({
         id: `${Date.now()}-rbac-password-mismatch`,
         message,
@@ -1307,7 +1442,7 @@ export default function Home() {
       return;
     }
     setRbacLoading(true);
-    setRbacMessage('');
+    setRbacScopedMessage('createUser', '');
     try {
       await authService.createRbacUser({
         username: rbacUsername,
@@ -1316,7 +1451,7 @@ export default function Home() {
         group_id: rbacUserGroupId,
         operations: rbacUserGroupId ? [] : rbacUserOperations,
       });
-      setRbacMessage('User created.');
+      setRbacScopedMessage('createUser', 'User created.');
       setRbacUsername('');
       setRbacPassword('');
       setRbacConfirmPassword('');
@@ -1325,7 +1460,7 @@ export default function Home() {
       await loadRbac();
     } catch (error) {
       const data = error.response?.data;
-      setRbacMessage(data?.error || 'Unable to create user.');
+      setRbacScopedMessage('createUser', data?.error || 'Unable to create user.');
     } finally {
       setRbacLoading(false);
     }
@@ -1334,31 +1469,32 @@ export default function Home() {
   const handleCreateRbacGroup = async (event) => {
     event.preventDefault();
     setRbacLoading(true);
-    setRbacMessage('');
+    setRbacScopedMessage('createGroup', '');
     try {
       await authService.createRbacGroup({ name: rbacGroupName, operations: rbacGroupOperations });
-      setRbacMessage('Group created.');
+      setRbacScopedMessage('createGroup', 'Group created.');
       setRbacGroupName('');
       setRbacGroupOperations([]);
       await loadRbac();
     } catch (error) {
       const data = error.response?.data;
-      setRbacMessage(data?.error || 'Unable to create group.');
+      setRbacScopedMessage('createGroup', data?.error || 'Unable to create group.');
     } finally {
       setRbacLoading(false);
     }
   };
 
   const handleDeleteRbacItem = async (type, id) => {
+    const messageScope = type === 'user' ? 'existingUsers' : 'existingGroups';
     setRbacLoading(true);
-    setRbacMessage('');
+    setRbacScopedMessage(messageScope, '');
     try {
       await authService.deleteRbacItem(type, id);
-      setRbacMessage(`${type === 'user' ? 'User' : 'Group'} deleted.`);
+      setRbacScopedMessage(messageScope, `${type === 'user' ? 'User' : 'Group'} deleted.`);
       await loadRbac();
     } catch (error) {
       const data = error.response?.data;
-      setRbacMessage(data?.error || 'Unable to delete item.');
+      setRbacScopedMessage(messageScope, data?.error || 'Unable to delete item.');
     } finally {
       setRbacLoading(false);
     }
@@ -4175,7 +4311,7 @@ export default function Home() {
                     >
                       <span className="home-nav-icon" aria-hidden="true">NU</span>
                       <span className="home-nav-copy"><span className="home-nav-label">{canCreateRbacUser ? 'New user' : 'Users'}</span>
-                      <small>{canCreateRbacUser ? 'Create a login with scoped operations.' : 'Manage existing users.'}</small></span>
+                      <small>{canCreateRbacUser ? '' : 'Manage existing users.'}</small></span>
                     </button>
                   )}
                   {(canCreateRbacGroup || canDeleteRbacGroup) && (
@@ -4189,7 +4325,7 @@ export default function Home() {
                     >
                       <span className="home-nav-icon" aria-hidden="true">NG</span>
                       <span className="home-nav-copy"><span className="home-nav-label">{canCreateRbacGroup ? 'New group' : 'Groups'}</span>
-                      <small>{canCreateRbacGroup ? 'Bundle permissions for reusable access.' : 'Manage existing groups.'}</small></span>
+                      <small>{canCreateRbacGroup ? '' : 'Manage existing groups.'}</small></span>
                     </button>
                   )}
                 </>
@@ -4388,7 +4524,7 @@ export default function Home() {
             rbacTab={rbacTab}
             rbacData={rbacData}
             rbacLoading={rbacLoading}
-            rbacMessage={rbacMessage}
+            rbacMessages={rbacMessages}
             rbacUsername={rbacUsername}
             rbacPassword={rbacPassword}
             rbacConfirmPassword={rbacConfirmPassword}
@@ -5036,6 +5172,12 @@ function KubernetesPlaceholderPanel({ action, onNotify, onAuthBusyChange }) {
   if (action.id === 'k8s-service') {
     return <KubernetesServiceCommandPanel onNotify={onNotify} />;
   }
+  if (action.id === 'k8s-resources') {
+    return <KubernetesResourcesCommandPanel onNotify={onNotify} />;
+  }
+  if (action.id === 'k8s-autoscale') {
+    return <KubernetesAutoscaleCommandPanel onNotify={onNotify} />;
+  }
   if (action.id === 'k8s-auth') {
     return <KubernetesAuthenticationPanel onNotify={onNotify} onBusyChange={onAuthBusyChange} />;
   }
@@ -5163,6 +5305,15 @@ function KubernetesPodCommandPanel({ onNotify }) {
       ownerName: normalizedName,
     };
     setRunningPods((current) => [nextPod, ...current.filter((pod) => pod.name !== normalizedName || pod.namespace !== namespace)]);
+    if (selectedOperation === 'deployment') {
+      saveKubernetesObject('deployment', {
+        id: getKubernetesObjectId(normalizedName, namespace),
+        name: normalizedName,
+        namespace,
+        image: resolvedImage,
+        source: 'pod-workspace',
+      });
+    }
     showPodOutput(
       '$ ' + generatedCommand,
       [
@@ -5366,6 +5517,534 @@ function KubernetesPodCommandPanel({ onNotify }) {
             </div>
             <pre className="k8s-pod-modal-output">{podActionDialog.lines.join('\n')}</pre>
           </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KubernetesAutoscaleCommandPanel({ onNotify }) {
+  const [autoscaleTab, setAutoscaleTab] = useState('create');
+  const [targetKind, setTargetKind] = useState('deployment');
+  const [namespace, setNamespace] = useState('default');
+  const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [targetObjects, setTargetObjects] = useState(() => readKubernetesAutoscaleTargets('deployment', 'default'));
+  const [selectedTargetName, setSelectedTargetName] = useState('');
+  const [minReplicas, setMinReplicas] = useState('2');
+  const [maxReplicas, setMaxReplicas] = useState('10');
+  const [cpuPercent, setCpuPercent] = useState('80');
+  const [hpas, setHpas] = useState(() => readStoredKubernetesHpas());
+  const [autoscaleMessage, setAutoscaleMessage] = useState('');
+  const [outputVisible, setOutputVisible] = useState(false);
+  const [output, setOutput] = useState('');
+
+  const selectedTarget = getKubernetesAutoscaleTarget(targetKind);
+  const normalizedTargetName = selectedTargetName.trim();
+  const commandTargetName = normalizedTargetName || selectedTarget.placeholder;
+  const commandMin = minReplicas.trim() || '<min>';
+  const commandMax = maxReplicas.trim() || '<max>';
+  const commandCpu = cpuPercent.trim() || '<cpu-percent>';
+  const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
+  const generatedCommand = `kubectl autoscale ${targetKind} ${commandTargetName} --min=${commandMin} --max=${commandMax} --cpu-percent=${commandCpu}${namespaceSegment}`;
+  const deleteCommand = `kubectl delete hpa ${hpas.length ? '<hpa-name>' : selectedTarget.placeholder}${namespaceSegment}`;
+  const displayedCommand = autoscaleTab === 'create' ? generatedCommand : deleteCommand;
+  const canCreateHpa = Boolean(
+    normalizedTargetName
+    && Number(minReplicas) > 0
+    && Number(maxReplicas) >= Number(minReplicas)
+    && Number(cpuPercent) > 0
+  );
+
+  const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
+
+  const refreshTargetObjects = (kind = targetKind, namespaceName = namespace) => {
+    const nextTargets = readKubernetesAutoscaleTargets(kind, namespaceName);
+    setTargetObjects(nextTargets);
+    setSelectedTargetName((current) => (
+      nextTargets.some((object) => object.name === current) ? current : (nextTargets[0]?.name || '')
+    ));
+  };
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+  }, []);
+
+  useEffect(() => {
+    refreshTargetObjects(targetKind, namespace);
+  }, [targetKind, namespace]);
+
+  useEffect(() => {
+    if (!autoscaleMessage) return undefined;
+    const timer = window.setTimeout(() => setAutoscaleMessage(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [autoscaleMessage]);
+
+  const handleCreateHpa = () => {
+    const nextHpas = saveKubernetesHpa({
+      id: getKubernetesHpaId(targetKind, normalizedTargetName, namespace),
+      targetKind,
+      targetLabel: selectedTarget.label,
+      targetName: normalizedTargetName,
+      namespace,
+      minReplicas: minReplicas.trim(),
+      maxReplicas: maxReplicas.trim(),
+      cpuPercent: cpuPercent.trim(),
+      command: generatedCommand,
+    });
+    setHpas(nextHpas);
+    setAutoscaleMessage(`Autoscale created for ${normalizedTargetName}.`);
+    setOutput([
+      '$ ' + generatedCommand,
+      `Kubernetes object: ${selectedTarget.label}`,
+      `Related object: ${normalizedTargetName}`,
+      `Namespace: ${namespace}`,
+      `Min pods: ${minReplicas.trim()}`,
+      `Max pods: ${maxReplicas.trim()}`,
+      `CPU target: ${cpuPercent.trim()}%`,
+      'Status: command preview generated. Kubernetes execution is not connected yet.',
+    ].join('\n'));
+    setOutputVisible(true);
+    onNotify?.(`Autoscale command preview generated for ${normalizedTargetName}.`, 'Kubernetes Autoscale');
+  };
+
+  const handleDeleteHpa = (hpa) => {
+    const nextHpas = deleteKubernetesHpa(hpa.id);
+    setHpas(nextHpas);
+    setAutoscaleMessage(`Autoscale removed for ${hpa.targetName}.`);
+    onNotify?.(`HPA delete command preview generated for ${hpa.targetName}.`, 'Kubernetes Autoscale');
+  };
+
+  return (
+    <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes autoscale command builder">
+      <div className="k8s-command-heading">
+        <div>
+          <h2>Autoscale Workspace</h2>
+          <p>Create horizontal pod autoscalers, review existing HPA previews, and remove autoscale entries with kubectl previews.</p>
+        </div>
+        <div className="k8s-command-preview-card">
+          <span>Generated command</span>
+          <code>{displayedCommand}</code>
+        </div>
+      </div>
+
+      <div className="resource-tabs k8s-object-tabs" role="tablist" aria-label="Kubernetes autoscale tabs">
+        <button type="button" role="tab" className={autoscaleTab === 'create' ? 'active' : ''} onClick={() => setAutoscaleTab('create')}>Create Autoscale</button>
+        <button type="button" role="tab" className={autoscaleTab === 'existing' ? 'active' : ''} onClick={() => setAutoscaleTab('existing')}>Existing HPA</button>
+      </div>
+
+      {autoscaleMessage ? <p className="container-message">{autoscaleMessage}</p> : null}
+
+      {autoscaleTab === 'create' ? (
+        <>
+          <div className="k8s-command-form">
+            <label>
+              <span>K8s object</span>
+              <select
+                value={targetKind}
+                onChange={(event) => setTargetKind(event.target.value)}
+              >
+                {KUBERNETES_AUTOSCALE_TARGETS.map((target) => (
+                  <option value={target.value} key={target.value}>{target.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span>Namespace</span>
+              <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+                {namespaces.map((namespaceName) => (
+                  <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span>Related object name</span>
+              <select
+                value={selectedTargetName}
+                onChange={(event) => setSelectedTargetName(event.target.value)}
+                onFocus={() => refreshTargetObjects()}
+                disabled={!targetObjects.length}
+              >
+                {targetObjects.length ? (
+                  targetObjects.map((object) => (
+                    <option value={object.name} key={object.id}>{object.name}</option>
+                  ))
+                ) : (
+                  <option value="">No {selectedTarget.label.toLowerCase()} names found</option>
+                )}
+              </select>
+              {!targetObjects.length ? <small>No saved {selectedTarget.label.toLowerCase()} previews found for this namespace.</small> : null}
+            </label>
+
+            <label>
+              <span>Min pods</span>
+              <input
+                type="number"
+                min="1"
+                value={minReplicas}
+                onChange={(event) => setMinReplicas(event.target.value)}
+                placeholder="2"
+              />
+            </label>
+
+            <label>
+              <span>Max pods</span>
+              <input
+                type="number"
+                min="1"
+                value={maxReplicas}
+                onChange={(event) => setMaxReplicas(event.target.value)}
+                placeholder="10"
+              />
+            </label>
+
+            <label>
+              <span>CPU percent</span>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={cpuPercent}
+                onChange={(event) => setCpuPercent(event.target.value)}
+                placeholder="80"
+              />
+            </label>
+          </div>
+
+          <div className="k8s-command-actions">
+            <button type="button" className="home-primary-button" onClick={handleCreateHpa} disabled={!canCreateHpa}>
+              Create Autoscale
+            </button>
+            <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+              {outputVisible ? 'Hide Output View' : 'Output View'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="k8s-autoscale-manager">
+          <div className="k8s-autoscale-list" role="list" aria-label="Existing Kubernetes HPA previews">
+            {hpas.map((hpa) => (
+              <article className="k8s-autoscale-row" role="listitem" key={hpa.id}>
+                <div>
+                  <strong>{hpa.targetName}</strong>
+                  <span>{hpa.targetLabel || hpa.targetKind} / {hpa.namespace}</span>
+                </div>
+                <dl>
+                  <div><dt>Min</dt><dd>{hpa.minReplicas}</dd></div>
+                  <div><dt>Max</dt><dd>{hpa.maxReplicas}</dd></div>
+                  <div><dt>CPU</dt><dd>{hpa.cpuPercent}%</dd></div>
+                </dl>
+                <button
+                  type="button"
+                  className="rbac-delete-icon-button"
+                  onClick={() => handleDeleteHpa(hpa)}
+                  aria-label={`Remove autoscale for ${hpa.targetName}`}
+                >
+                  ×
+                </button>
+              </article>
+            ))}
+          </div>
+          {!hpas.length ? <div className="resource-empty-state">No autoscale entries created yet.</div> : null}
+        </div>
+      )}
+
+      {outputVisible && autoscaleTab === 'create' ? (
+        <div className="k8s-command-output">
+          <div>
+            <strong>Output View</strong>
+            <span>Preview only</span>
+          </div>
+          <pre>{output || ['$ ' + generatedCommand, 'Click Create Autoscale to generate output.'].join('\n')}</pre>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function KubernetesResourcesCommandPanel({ onNotify }) {
+  const [resourcesTab, setResourcesTab] = useState('create');
+  const [targetKind, setTargetKind] = useState('deployment');
+  const [namespace, setNamespace] = useState('default');
+  const [namespaces, setNamespaces] = useState(() => readStoredKubernetesNamespaces());
+  const [targetObjects, setTargetObjects] = useState(() => readKubernetesAutoscaleTargets('deployment', 'default'));
+  const [selectedTargetName, setSelectedTargetName] = useState('');
+  const [applyRequests, setApplyRequests] = useState(false);
+  const [requestCpu, setRequestCpu] = useState('100m');
+  const [requestMemory, setRequestMemory] = useState('256Mi');
+  const [applyLimits, setApplyLimits] = useState(false);
+  const [limitCpu, setLimitCpu] = useState('200m');
+  const [limitMemory, setLimitMemory] = useState('512Mi');
+  const [resourceSettings, setResourceSettings] = useState(() => readStoredKubernetesResourceSettings());
+  const [resourcesMessage, setResourcesMessage] = useState('');
+  const [outputVisible, setOutputVisible] = useState(false);
+  const [output, setOutput] = useState('');
+
+  const selectedTarget = getKubernetesAutoscaleTarget(targetKind);
+  const normalizedTargetName = selectedTargetName.trim();
+  const commandTargetName = normalizedTargetName || selectedTarget.placeholder;
+  const requestCpuValue = requestCpu.trim();
+  const requestMemoryValue = requestMemory.trim();
+  const limitCpuValue = limitCpu.trim();
+  const limitMemoryValue = limitMemory.trim();
+  const requestSegment = applyRequests
+    ? ` --requests=cpu=${requestCpuValue || '<cpu>'},memory=${requestMemoryValue || '<memory>'}`
+    : '';
+  const limitSegment = applyLimits
+    ? ` --limits=cpu=${limitCpuValue || '<cpu>'},memory=${limitMemoryValue || '<memory>'}`
+    : '';
+  const namespaceSegment = namespace && namespace !== 'default' ? ` --namespace=${namespace}` : '';
+  const generatedCommand = `kubectl set resources ${targetKind} ${commandTargetName}${requestSegment}${limitSegment}${namespaceSegment}`;
+  const deleteCommand = `kubectl set resources ${targetKind} ${selectedTarget.placeholder} --requests=cpu=0,memory=0 --limits=cpu=0,memory=0${namespaceSegment}`;
+  const displayedCommand = resourcesTab === 'create' ? generatedCommand : deleteCommand;
+  const hasRequestValues = !applyRequests || Boolean(requestCpuValue && requestMemoryValue);
+  const hasLimitValues = !applyLimits || Boolean(limitCpuValue && limitMemoryValue);
+  const canCreateResources = Boolean(
+    normalizedTargetName
+    && (applyRequests || applyLimits)
+    && hasRequestValues
+    && hasLimitValues
+  );
+
+  const refreshNamespaces = () => setNamespaces(readStoredKubernetesNamespaces());
+
+  const refreshTargetObjects = (kind = targetKind, namespaceName = namespace) => {
+    const nextTargets = readKubernetesAutoscaleTargets(kind, namespaceName);
+    setTargetObjects(nextTargets);
+    setSelectedTargetName((current) => (
+      nextTargets.some((object) => object.name === current) ? current : (nextTargets[0]?.name || '')
+    ));
+  };
+
+  useEffect(() => {
+    const handleNamespaceUpdate = () => setNamespaces(readStoredKubernetesNamespaces());
+    window.addEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+    return () => window.removeEventListener(KUBERNETES_NAMESPACE_EVENT, handleNamespaceUpdate);
+  }, []);
+
+  useEffect(() => {
+    refreshTargetObjects(targetKind, namespace);
+  }, [targetKind, namespace]);
+
+  useEffect(() => {
+    if (!resourcesMessage) return undefined;
+    const timer = window.setTimeout(() => setResourcesMessage(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [resourcesMessage]);
+
+  const handleCreateResources = () => {
+    const requests = applyRequests ? { cpu: requestCpuValue, memory: requestMemoryValue } : null;
+    const limits = applyLimits ? { cpu: limitCpuValue, memory: limitMemoryValue } : null;
+    const nextSettings = saveKubernetesResourceSetting({
+      id: getKubernetesResourceSettingId(targetKind, normalizedTargetName, namespace),
+      targetKind,
+      targetLabel: selectedTarget.label,
+      targetName: normalizedTargetName,
+      namespace,
+      requests,
+      limits,
+      command: generatedCommand,
+    });
+    setResourceSettings(nextSettings);
+    setResourcesMessage(`Resources updated for ${normalizedTargetName}.`);
+    setOutput([
+      '$ ' + generatedCommand,
+      `Kubernetes object: ${selectedTarget.label}`,
+      `Related object: ${normalizedTargetName}`,
+      `Namespace: ${namespace}`,
+      `Requests: ${requests ? `cpu=${requests.cpu}, memory=${requests.memory}` : 'Not selected'}`,
+      `Limits: ${limits ? `cpu=${limits.cpu}, memory=${limits.memory}` : 'Not selected'}`,
+      'Status: command preview generated. Kubernetes execution is not connected yet.',
+    ].join('\n'));
+    setOutputVisible(true);
+    onNotify?.(`Resource command preview generated for ${normalizedTargetName}.`, 'Kubernetes Resources');
+  };
+
+  const handleDeleteResources = (resourceSetting) => {
+    const nextSettings = deleteKubernetesResourceSetting(resourceSetting.id);
+    setResourceSettings(nextSettings);
+    setResourcesMessage(`Resources removed for ${resourceSetting.targetName}.`);
+    onNotify?.(`Resource setting removed for ${resourceSetting.targetName}.`, 'Kubernetes Resources');
+  };
+
+  const renderResourceValue = (value) => (value ? `CPU ${value.cpu}, Memory ${value.memory}` : 'Not set');
+
+  return (
+    <section className="home-panel kubernetes-command-panel" aria-label="Kubernetes resources command builder">
+      <div className="k8s-command-heading">
+        <div>
+          <h2>Resources Workspace</h2>
+          <p>Set CPU and memory requests or limits for Kubernetes workloads with kubectl previews.</p>
+        </div>
+        <div className="k8s-command-preview-card">
+          <span>Generated command</span>
+          <code>{displayedCommand}</code>
+        </div>
+      </div>
+
+      <div className="resource-tabs k8s-object-tabs" role="tablist" aria-label="Kubernetes resources tabs">
+        <button type="button" role="tab" className={resourcesTab === 'create' ? 'active' : ''} onClick={() => setResourcesTab('create')}>Create Resources</button>
+        <button type="button" role="tab" className={resourcesTab === 'existing' ? 'active' : ''} onClick={() => setResourcesTab('existing')}>Existing Resources</button>
+      </div>
+
+      {resourcesMessage ? <p className="container-message">{resourcesMessage}</p> : null}
+
+      {resourcesTab === 'create' ? (
+        <>
+          <div className="k8s-command-form">
+            <label>
+              <span>K8s object</span>
+              <select value={targetKind} onChange={(event) => setTargetKind(event.target.value)}>
+                {KUBERNETES_AUTOSCALE_TARGETS.map((target) => (
+                  <option value={target.value} key={target.value}>{target.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span>Namespace</span>
+              <select value={namespace} onChange={(event) => setNamespace(event.target.value)} onFocus={refreshNamespaces}>
+                {namespaces.map((namespaceName) => (
+                  <option value={namespaceName} key={namespaceName}>{namespaceName}</option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span>Related object name</span>
+              <select
+                value={selectedTargetName}
+                onChange={(event) => setSelectedTargetName(event.target.value)}
+                onFocus={() => refreshTargetObjects()}
+                disabled={!targetObjects.length}
+              >
+                {targetObjects.length ? (
+                  targetObjects.map((object) => (
+                    <option value={object.name} key={object.id}>{object.name}</option>
+                  ))
+                ) : (
+                  <option value="">No {selectedTarget.label.toLowerCase()} names found</option>
+                )}
+              </select>
+              {!targetObjects.length ? <small>No saved {selectedTarget.label.toLowerCase()} previews found for this namespace.</small> : null}
+            </label>
+          </div>
+
+          <div className="k8s-resource-control-grid">
+            <div className={`k8s-resource-control-card ${applyRequests ? 'active' : ''}`}>
+              <label className="k8s-resource-toggle">
+                <input
+                  type="checkbox"
+                  checked={applyRequests}
+                  onChange={(event) => setApplyRequests(event.target.checked)}
+                />
+                <span>Requests</span>
+              </label>
+              <div className="k8s-resource-fields">
+                <label>
+                  <span>CPU</span>
+                  <input
+                    type="text"
+                    value={requestCpu}
+                    onChange={(event) => setRequestCpu(event.target.value)}
+                    placeholder="100m"
+                    disabled={!applyRequests}
+                  />
+                </label>
+                <label>
+                  <span>Memory</span>
+                  <input
+                    type="text"
+                    value={requestMemory}
+                    onChange={(event) => setRequestMemory(event.target.value)}
+                    placeholder="256Mi"
+                    disabled={!applyRequests}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className={`k8s-resource-control-card ${applyLimits ? 'active' : ''}`}>
+              <label className="k8s-resource-toggle">
+                <input
+                  type="checkbox"
+                  checked={applyLimits}
+                  onChange={(event) => setApplyLimits(event.target.checked)}
+                />
+                <span>Limits</span>
+              </label>
+              <div className="k8s-resource-fields">
+                <label>
+                  <span>CPU</span>
+                  <input
+                    type="text"
+                    value={limitCpu}
+                    onChange={(event) => setLimitCpu(event.target.value)}
+                    placeholder="200m"
+                    disabled={!applyLimits}
+                  />
+                </label>
+                <label>
+                  <span>Memory</span>
+                  <input
+                    type="text"
+                    value={limitMemory}
+                    onChange={(event) => setLimitMemory(event.target.value)}
+                    placeholder="512Mi"
+                    disabled={!applyLimits}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="k8s-command-actions">
+            <button type="button" className="home-primary-button" onClick={handleCreateResources} disabled={!canCreateResources}>
+              Create
+            </button>
+            <button type="button" className="home-secondary-button" onClick={() => setOutputVisible((visible) => !visible)}>
+              {outputVisible ? 'Hide Output View' : 'Output View'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="k8s-resource-manager">
+          <div className="k8s-resource-list" role="list" aria-label="Existing Kubernetes resource previews">
+            {resourceSettings.map((resourceSetting) => (
+              <article className="k8s-resource-row" role="listitem" key={resourceSetting.id}>
+                <div>
+                  <strong>{resourceSetting.targetName}</strong>
+                  <span>{resourceSetting.targetLabel || resourceSetting.targetKind} / {resourceSetting.namespace}</span>
+                </div>
+                <dl>
+                  <div><dt>Requests</dt><dd>{renderResourceValue(resourceSetting.requests)}</dd></div>
+                  <div><dt>Limits</dt><dd>{renderResourceValue(resourceSetting.limits)}</dd></div>
+                </dl>
+                <button
+                  type="button"
+                  className="rbac-delete-icon-button"
+                  onClick={() => handleDeleteResources(resourceSetting)}
+                  aria-label={`Remove resource settings for ${resourceSetting.targetName}`}
+                >
+                  ×
+                </button>
+              </article>
+            ))}
+          </div>
+          {!resourceSettings.length ? <div className="resource-empty-state">No resource settings created yet.</div> : null}
+        </div>
+      )}
+
+      {outputVisible && resourcesTab === 'create' ? (
+        <div className="k8s-command-output">
+          <div>
+            <strong>Output View</strong>
+            <span>Preview only</span>
+          </div>
+          <pre>{output || ['$ ' + generatedCommand, 'Select requests or limits, then click Create to generate output.'].join('\n')}</pre>
         </div>
       ) : null}
     </section>
@@ -12106,7 +12785,7 @@ function RbacPanel({
   rbacTab,
   rbacData,
   rbacLoading,
-  rbacMessage,
+  rbacMessages,
   rbacUsername,
   rbacPassword,
   rbacConfirmPassword,
@@ -12130,9 +12809,13 @@ function RbacPanel({
   onDeleteItem,
   onRefresh,
 }) {
+  const [rbacUserPanelTab, setRbacUserPanelTab] = useState('create');
+  const [rbacGroupPanelTab, setRbacGroupPanelTab] = useState('create');
+  const [pendingRbacDelete, setPendingRbacDelete] = useState(null);
   const operations = rbacData.operations || [];
   const users = rbacData.users || [];
   const groups = rbacData.groups || [];
+  const messages = rbacMessages || {};
   const labelByCode = new Map(operations.map((operation) => [operation.code, operation.label]));
   const canManageRbacUsers = canCreateRbacUser || canDeleteRbacUser;
   const canManageRbacGroups = canCreateRbacGroup || canDeleteRbacGroup;
@@ -12144,6 +12827,13 @@ function RbacPanel({
   const rbacPasswordsEntered = Boolean(rbacPassword && rbacConfirmPassword);
   const rbacPasswordsMatch = rbacPasswordsEntered && rbacPassword === rbacConfirmPassword;
   const rbacPasswordMismatch = rbacPasswordsEntered && !rbacPasswordsMatch;
+  const activeUserPanelTab = rbacUserPanelTab === 'create' && !canCreateRbacUser ? 'existing' : rbacUserPanelTab;
+  const activeGroupPanelTab = rbacGroupPanelTab === 'create' && !canCreateRbacGroup ? 'existing' : rbacGroupPanelTab;
+  const confirmRbacDelete = async () => {
+    if (!pendingRbacDelete) return;
+    await onDeleteItem(pendingRbacDelete.type, pendingRbacDelete.id);
+    setPendingRbacDelete(null);
+  };
 
   return (
     <section className="home-panel rbac-panel">
@@ -12168,101 +12858,156 @@ function RbacPanel({
         <p>{activeRbacTab === 'user' ? (canCreateRbacUser ? 'Create one login and choose its access.' : 'Delete existing users allowed by your role.') : (canCreateRbacGroup ? 'Create one reusable permission group.' : 'Delete existing user groups allowed by your role.')}</p>
       </div>
 
-      {rbacMessage && <p className="container-message">{rbacMessage}</p>}
+      {activeRbacTab === 'user' ? (
+        <>
+          <div className="resource-tabs rbac-inner-tabs" role="tablist" aria-label="User access tabs">
+            {canCreateRbacUser ? <button type="button" role="tab" className={activeUserPanelTab === 'create' ? 'active' : ''} onClick={() => setRbacUserPanelTab('create')}>Create User</button> : null}
+            <button type="button" role="tab" className={activeUserPanelTab === 'existing' ? 'active' : ''} onClick={() => setRbacUserPanelTab('existing')}>Existing Users</button>
+          </div>
 
-      {activeRbacTab === 'user' && canCreateRbacUser ? (
-        <form className="agent-form rbac-form" onSubmit={onCreateUser}>
-          <div className="agent-form-grid">
-            <label><span>Username</span><input value={rbacUsername} onChange={(event) => onUsernameChange(event.target.value)} disabled={rbacLoading} autoComplete="username" /></label>
-            <label><span>Password</span><input type="password" value={rbacPassword} onChange={(event) => onPasswordChange(event.target.value)} disabled={rbacLoading} autoComplete="new-password" /></label>
-            <label>
-              <span>Confirm password</span>
-              <input
-                type="password"
-                value={rbacConfirmPassword}
-                onChange={(event) => onConfirmPasswordChange(event.target.value)}
-                disabled={rbacLoading}
-                autoComplete="new-password"
-                aria-invalid={rbacPasswordMismatch}
-                aria-describedby="rbac-password-match-status"
-              />
-              {rbacPasswordsEntered ? (
-                <small
-                  id="rbac-password-match-status"
-                  className={`password-match-status ${rbacPasswordsMatch ? 'match' : 'mismatch'}`}
-                >
-                  {rbacPasswordsMatch ? 'Passwords match.' : 'Password mismatched, please check it again.'}
-                </small>
-              ) : null}
-            </label>
-            <label>
-              <span>Access group</span>
-              <select value={rbacUserGroupId} onChange={(event) => onUserGroupChange(event.target.value)} disabled={rbacLoading}>
-                <option value="">No group - Use direct permissions</option>
-                {groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}
-              </select>
-              <small className="field-help">Choose a group to inherit its operations. Direct operations are disabled while a group is selected.</small>
-            </label>
-            <div className="rbac-operation-field">
-              <span className="rbac-operation-field-label">Allowed operations</span>
-              <OperationSelect operations={operations} value={rbacUserOperations} onChange={onUserOperationsChange} disabled={rbacLoading || Boolean(rbacUserGroupId)} />
+          {activeUserPanelTab === 'create' && canCreateRbacUser ? (
+            <form className="agent-form rbac-form" onSubmit={onCreateUser}>
+              {messages.createUser ? <p className="container-message">{messages.createUser}</p> : null}
+              <div className="agent-form-grid">
+                <label><span>Username</span><input value={rbacUsername} onChange={(event) => onUsernameChange(event.target.value)} disabled={rbacLoading} autoComplete="username" /></label>
+                <label><span>Password</span><input type="password" value={rbacPassword} onChange={(event) => onPasswordChange(event.target.value)} disabled={rbacLoading} autoComplete="new-password" /></label>
+                <label>
+                  <span>Confirm password</span>
+                  <input
+                    type="password"
+                    value={rbacConfirmPassword}
+                    onChange={(event) => onConfirmPasswordChange(event.target.value)}
+                    disabled={rbacLoading}
+                    autoComplete="new-password"
+                    aria-invalid={rbacPasswordMismatch}
+                    aria-describedby="rbac-password-match-status"
+                  />
+                  {rbacPasswordsEntered ? (
+                    <small
+                      id="rbac-password-match-status"
+                      className={`password-match-status ${rbacPasswordsMatch ? 'match' : 'mismatch'}`}
+                    >
+                      {rbacPasswordsMatch ? 'Passwords match.' : 'Password mismatched, please check it again.'}
+                    </small>
+                  ) : null}
+                </label>
+                <label>
+                  <span>Access group</span>
+                  <select value={rbacUserGroupId} onChange={(event) => onUserGroupChange(event.target.value)} disabled={rbacLoading}>
+                    <option value="">No group - Use direct permissions</option>
+                    {groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}
+                  </select>
+                  <small className="field-help">Choose a group to inherit its operations. Direct operations are disabled while a group is selected.</small>
+                </label>
+                <div className="rbac-operation-field">
+                  <span className="rbac-operation-field-label">Allowed operations</span>
+                  <OperationSelect operations={operations} value={rbacUserOperations} onChange={onUserOperationsChange} disabled={rbacLoading || Boolean(rbacUserGroupId)} />
+                </div>
+              </div>
+              <div className="container-actions">
+                <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacUsername.trim() || !rbacPassword || !rbacConfirmPassword || !rbacPasswordsMatch}>Create user</button>
+              </div>
+            </form>
+          ) : (
+            <>
+              {messages.existingUsers ? <p className="container-message">{messages.existingUsers}</p> : null}
+              <div className="rbac-list-heading">
+                <h3>Existing Users</h3>
+              </div>
+              <div className="rbac-list-panel">
+                {users.length ? users.map((user) => {
+                  const groupNames = user.groups?.map((group) => group.name).join(', ');
+                  const inheritedFromGroup = Boolean(groupNames);
+                  return (
+                    <article className="rbac-list-item" key={user.id}>
+                      <div className="rbac-list-main">
+                        <div>
+                          <strong>{user.username}</strong>
+                          <small>{user.is_admin ? 'Administrator' : inheritedFromGroup ? `Group: ${groupNames}` : user.operations_configured ? 'Direct permissions' : 'Existing user - unchanged'}</small>
+                        </div>
+                        <OperationBadges codes={user.operations} labelByCode={labelByCode} fallback={user.operations_configured ? 'No operations selected' : 'All operations'} />
+                      </div>
+                      <button
+                        type="button"
+                        className="rbac-delete-icon-button"
+                        onClick={() => setPendingRbacDelete({ type: 'user', id: user.id, name: user.username })}
+                        disabled={rbacLoading || user.is_admin || !canDeleteRbacUser}
+                        aria-label={`Delete user ${user.username}`}
+                        title={user.is_admin ? 'Administrator users cannot be deleted here' : `Delete user ${user.username}`}
+                      >
+                        ×
+                      </button>
+                    </article>
+                  );
+                }) : <p className="resource-empty-state">No created users found.</p>}
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="resource-tabs rbac-inner-tabs" role="tablist" aria-label="Group access tabs">
+            {canCreateRbacGroup ? <button type="button" role="tab" className={activeGroupPanelTab === 'create' ? 'active' : ''} onClick={() => setRbacGroupPanelTab('create')}>Create Group</button> : null}
+            <button type="button" role="tab" className={activeGroupPanelTab === 'existing' ? 'active' : ''} onClick={() => setRbacGroupPanelTab('existing')}>Existing Groups</button>
+          </div>
+
+          {activeGroupPanelTab === 'create' && canCreateRbacGroup ? (
+            <form className="agent-form rbac-form" onSubmit={onCreateGroup}>
+              {messages.createGroup ? <p className="container-message">{messages.createGroup}</p> : null}
+              <div className="agent-form-grid">
+                <label><span>Group name</span><input value={rbacGroupName} onChange={(event) => onGroupNameChange(event.target.value)} disabled={rbacLoading} /></label>
+                <div className="rbac-operation-field"><span className="rbac-operation-field-label">Allowed operations</span><OperationSelect operations={operations} value={rbacGroupOperations} onChange={onGroupOperationsChange} disabled={rbacLoading} /></div>
+              </div>
+              <div className="container-actions">
+                <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacGroupName.trim()}>Create group</button>
+              </div>
+            </form>
+          ) : (
+            <>
+              {messages.existingGroups ? <p className="container-message">{messages.existingGroups}</p> : null}
+              <div className="rbac-list-heading">
+                <h3>Existing Groups</h3>
+              </div>
+              <div className="rbac-list-panel">
+                {groups.length ? groups.map((group) => (
+                  <article className="rbac-list-item" key={group.id}>
+                    <div className="rbac-list-main">
+                      <div>
+                        <strong>{group.name}</strong>
+                        <small>{group.user_count || 0} user(s)</small>
+                      </div>
+                      <OperationBadges codes={group.operations} labelByCode={labelByCode} />
+                    </div>
+                    <button
+                      type="button"
+                      className="rbac-delete-icon-button"
+                      onClick={() => setPendingRbacDelete({ type: 'group', id: group.id, name: group.name })}
+                      disabled={rbacLoading || !canDeleteRbacGroup}
+                      aria-label={`Delete group ${group.name}`}
+                      title={`Delete group ${group.name}`}
+                    >
+                      ×
+                    </button>
+                  </article>
+                )) : <p className="resource-empty-state">No created groups found.</p>}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {pendingRbacDelete ? (
+        <div className="output-modal-backdrop" role="presentation">
+          <div className="resource-delete-modal rbac-delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rbac-delete-title">
+            <h3 id="rbac-delete-title">Confirm delete</h3>
+            <p>Are you sure to delete {pendingRbacDelete.type} <strong>{pendingRbacDelete.name}</strong>?</p>
+            <div className="resource-modal-actions">
+              <button type="button" className="home-secondary-button" onClick={() => setPendingRbacDelete(null)} disabled={rbacLoading}>Cancel</button>
+              <button type="button" className="home-danger-button" onClick={confirmRbacDelete} disabled={rbacLoading}>Confirm</button>
             </div>
           </div>
-          <div className="container-actions">
-            <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacUsername.trim() || !rbacPassword || !rbacConfirmPassword || !rbacPasswordsMatch}>Create user</button>
-          </div>
-        </form>
-      ) : activeRbacTab === 'group' && canCreateRbacGroup ? (
-        <form className="agent-form rbac-form" onSubmit={onCreateGroup}>
-          <div className="agent-form-grid">
-            <label><span>Group name</span><input value={rbacGroupName} onChange={(event) => onGroupNameChange(event.target.value)} disabled={rbacLoading} /></label>
-            <div className="rbac-operation-field"><span className="rbac-operation-field-label">Allowed operations</span><OperationSelect operations={operations} value={rbacGroupOperations} onChange={onGroupOperationsChange} disabled={rbacLoading} /></div>
-          </div>
-          <div className="container-actions">
-            <button type="submit" className="home-primary-button" disabled={rbacLoading || !rbacGroupName.trim()}>Create group</button>
-          </div>
-        </form>
+        </div>
       ) : null}
-
-      <div className="rbac-list-heading">
-        <h3>{activeRbacTab === 'user' ? 'Users' : 'Groups'}</h3>
-      </div>
-
-      {activeRbacTab === 'user' ? (
-        <div className="rbac-list-panel">
-          {users.length ? users.map((user) => {
-            const groupNames = user.groups?.map((group) => group.name).join(', ');
-            const inheritedFromGroup = Boolean(groupNames);
-            return (
-              <article className="rbac-list-item" key={user.id}>
-                <div className="rbac-list-main">
-                  <div>
-                    <strong>{user.username}</strong>
-                    <small>{user.is_admin ? 'Administrator' : inheritedFromGroup ? `Group: ${groupNames}` : user.operations_configured ? 'Direct permissions' : 'Existing user - unchanged'}</small>
-                  </div>
-                  <OperationBadges codes={user.operations} labelByCode={labelByCode} fallback={user.operations_configured ? 'No operations selected' : 'All operations'} />
-                </div>
-                <button type="button" className="home-danger-button" onClick={() => onDeleteItem('user', user.id)} disabled={rbacLoading || user.is_admin || !canDeleteRbacUser}>Delete</button>
-              </article>
-            );
-          }) : <p className="resource-empty-state">No created users found.</p>}
-        </div>
-      ) : (
-        <div className="rbac-list-panel">
-          {groups.length ? groups.map((group) => (
-            <article className="rbac-list-item" key={group.id}>
-              <div className="rbac-list-main">
-                <div>
-                  <strong>{group.name}</strong>
-                  <small>{group.user_count || 0} user(s)</small>
-                </div>
-                <OperationBadges codes={group.operations} labelByCode={labelByCode} />
-              </div>
-              <button type="button" className="home-danger-button" onClick={() => onDeleteItem('group', group.id)} disabled={rbacLoading || !canDeleteRbacGroup}>Delete</button>
-            </article>
-          )) : <p className="resource-empty-state">No created groups found.</p>}
-        </div>
-      )}
     </section>
   );
 }

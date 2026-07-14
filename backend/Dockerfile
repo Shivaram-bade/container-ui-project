@@ -1,4 +1,4 @@
-# base image python 3.12.7
+# base image python 3.12.6
 FROM python:3.12-slim
 
 WORKDIR /app
